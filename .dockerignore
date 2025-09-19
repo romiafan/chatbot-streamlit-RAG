@@ -1,0 +1,64 @@
+# Git files
+.git
+.gitignore
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local development files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+*.log
+logs/
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Test files
+.pytest_cache/
+.tox/
+
+# Documentation
+docs/_build/
+
+# Local vector database (will be created in container)
+vector_db/
+chroma_db/
+
+# Uploaded files (will be created in container)
+uploads/
+
+# Temporary files
+temp/
+tmp/
