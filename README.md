@@ -17,29 +17,34 @@ A powerful **Retrieval-Augmented Generation (RAG)** chatbot built with Streamlit
 ### Option 1: Local Development
 
 #### Prerequisites
+
 - Python 3.13.7 (recommended) or Python 3.9+
 - Conda or Miniconda for environment management
 
 #### Installation
 
 1. **Clone the repository**
+
    ```bash
    git clone <repository-url>
    cd chatbot-streamlit-demo
    ```
 
 2. **Create and activate conda environment**
+
    ```bash
    conda create -n chatbot-py313 python=3.13.7
    conda activate chatbot-py313
    ```
 
 3. **Install dependencies**
+
    ```bash
    pip install -r requirements.txt
    ```
 
 4. **Run the RAG chatbot**
+
    ```bash
    streamlit run rag_chatbot_app.py
    ```
@@ -51,11 +56,13 @@ A powerful **Retrieval-Augmented Generation (RAG)** chatbot built with Streamlit
 #### Quick Docker Setup
 
 1. **Build the Docker image**
+
    ```bash
    docker build -t rag-chatbot .
    ```
 
 2. **Run the container**
+
    ```bash
    docker run -p 8501:8501 rag-chatbot
    ```
@@ -93,11 +100,11 @@ chatbot-streamlit-demo/
 
 ## 🛠️ Available Applications
 
-| Application | Description | Use Case |
-|-------------|-------------|----------|
-| `rag_chatbot_app.py` | **RAG-enabled chatbot** with document upload | 🎯 **Primary app** - Upload docs and chat |
-| `streamlit_chat_app.py` | Simple chatbot with Google Gemini | 💬 Basic AI conversations |
-| `streamlit_app_basic.py` | Streamlit UI components showcase | 📚 Learning Streamlit basics |
+| Application              | Description                                  | Use Case                                  |
+| ------------------------ | -------------------------------------------- | ----------------------------------------- |
+| `rag_chatbot_app.py`     | **RAG-enabled chatbot** with document upload | 🎯 **Primary app** - Upload docs and chat |
+| `streamlit_chat_app.py`  | Simple chatbot with Google Gemini            | 💬 Basic AI conversations                 |
+| `streamlit_app_basic.py` | Streamlit UI components showcase             | 📚 Learning Streamlit basics              |
 
 ## 🔧 Configuration
 
@@ -139,7 +146,7 @@ The RAG chatbot offers configurable parameters in the sidebar:
 ## 🎯 Use Cases
 
 - **📖 Research**: Upload academic papers and ask specific questions
-- **📋 Documentation**: Query technical manuals and guides  
+- **📋 Documentation**: Query technical manuals and guides
 - **📊 Analysis**: Upload reports and get insights
 - **🎓 Learning**: Upload textbooks and get explanations
 - **💼 Business**: Process contracts, policies, and procedures
@@ -148,6 +155,7 @@ The RAG chatbot offers configurable parameters in the sidebar:
 ## 🔧 Technical Dependencies
 
 ### Core Libraries
+
 - **Streamlit**: Web app framework
 - **Google Generative AI**: LLM integration
 - **ChromaDB**: Vector database
@@ -155,6 +163,7 @@ The RAG chatbot offers configurable parameters in the sidebar:
 - **LangChain**: Document processing utilities
 
 ### Document Processing
+
 - **PyPDF2**: PDF text extraction
 - **python-docx**: Word document processing
 - **tiktoken**: Token counting and management
