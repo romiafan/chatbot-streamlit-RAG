@@ -1,6 +1,23 @@
 # 🤖 RAG Chatbot Streamlit Demo
 
-A powerful **Retrieval-Augmented Generation (RAG)** chatbot built with Streamlit that allows you to upload documents and have intelligent conversations about their content using Google Gemini AI.
+A powerful **Retrieval-Augmented Generation (RAG)** ch```
+chatbot-streamlit-demo/
+├── rag_chatbot_app.py           # 🎯 Main RAG chatbot application
+├── document_processor.py        # 📄 Document processing and text extraction
+├── vector_database.py          # 🔍 Vector storage and similarity search
+├── test_rag_components.py       # 🧪 Testing utilities
+├── requirements.txt            # 📦 Python dependencies
+├── Dockerfile                  # 🐳 Container configuration
+├── .env.example                # ⚙️ Environment variables template
+└── README.md                  # 📖 This file
+```
+
+## 🛠️ Application
+
+The main application is a **RAG-enabled chatbot** (`rag_chatbot_app.py`) that allows you to:
+- 📁 Upload documents (PDF, TXT, DOCX)  
+- 🤖 Chat with AI about your documents
+- 🔍 Get responses with source attributionwith Streamlit that allows you to upload documents and have intelligent conversations about their content using Google Gemini AI.
 
 ## ✨ Features
 
@@ -90,21 +107,21 @@ chatbot-streamlit-demo/
 ├── document_processor.py        # 📄 Document processing and text extraction
 ├── vector_database.py          # 🔍 Vector storage and similarity search
 ├── streamlit_chat_app.py        # 💬 Simple chatbot (without RAG)
-├── streamlit_app_basic.py       # 📚 Streamlit UI components demo
-├── database_tools.py           # 🗄️ Database utilities
+├── database_tools.py           # �️ Database utilities
+├── test_rag_components.py       # 🧪 Testing utilities
 ├── requirements.txt            # 📦 Python dependencies
 ├── Dockerfile                  # 🐳 Container configuration
+├── .env.example                # ⚙️ Environment variables template
 ├── sales_data.db              # 📊 Sample database
 └── README.md                  # 📖 This file
 ```
 
 ## 🛠️ Available Applications
 
-| Application              | Description                                  | Use Case                                  |
-| ------------------------ | -------------------------------------------- | ----------------------------------------- |
+| Application              | Description                                   | Use Case                                  |
+| ------------------------ | --------------------------------------------- | ----------------------------------------- |
 | `rag_chatbot_app.py`     | **RAG-enabled chatbot** with document upload | 🎯 **Primary app** - Upload docs and chat |
 | `streamlit_chat_app.py`  | Simple chatbot with Google Gemini            | 💬 Basic AI conversations                 |
-| `streamlit_app_basic.py` | Streamlit UI components showcase             | 📚 Learning Streamlit basics              |
 
 ## 🔧 Configuration
 
