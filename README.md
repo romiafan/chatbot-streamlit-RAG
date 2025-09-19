@@ -1,21 +1,22 @@
 # 🤖 RAG Chatbot Streamlit Demo
 
 A powerful **Retrieval-Augmented Generation (RAG)** ch```
-chatbot-streamlit-demo/
-├── rag_chatbot_app.py           # 🎯 Main RAG chatbot application
-├── document_processor.py        # 📄 Document processing and text extraction
-├── vector_database.py          # 🔍 Vector storage and similarity search
-├── test_rag_components.py       # 🧪 Testing utilities
-├── requirements.txt            # 📦 Python dependencies
-├── Dockerfile                  # 🐳 Container configuration
-├── .env.example                # ⚙️ Environment variables template
-└── README.md                  # 📖 This file
-```
+chatbot-streamlit-RAG/
+├── rag_chatbot_app.py # 🎯 Main RAG chatbot application
+├── document_processor.py # 📄 Document processing and text extraction
+├── vector_database.py # 🔍 Vector storage and similarity search
+├── test_rag_components.py # 🧪 Testing utilities
+├── requirements.txt # 📦 Python dependencies
+├── Dockerfile # 🐳 Container configuration
+├── .env.example # ⚙️ Environment variables template
+└── README.md # 📖 This file
+
+````
 
 ## 🛠️ Application
 
 The main application is a **RAG-enabled chatbot** (`rag_chatbot_app.py`) that allows you to:
-- 📁 Upload documents (PDF, TXT, DOCX)  
+- 📁 Upload documents (PDF, TXT, DOCX)
 - 🤖 Chat with AI about your documents
 - 🔍 Get responses with source attributionwith Streamlit that allows you to upload documents and have intelligent conversations about their content using Google Gemini AI.
 
@@ -44,8 +45,8 @@ The main application is a **RAG-enabled chatbot** (`rag_chatbot_app.py`) that al
 
    ```bash
    git clone <repository-url>
-   cd chatbot-streamlit-demo
-   ```
+   cd chatbot-streamlit-RAG
+````
 
 2. **Create and activate conda environment**
 
@@ -102,7 +103,7 @@ docker logs rag-chatbot-app
 ## 📁 Project Structure
 
 ```
-chatbot-streamlit-demo/
+chatbot-streamlit-RAG/
 ├── rag_chatbot_app.py           # 🎯 Main RAG chatbot application
 ├── document_processor.py        # 📄 Document processing and text extraction
 ├── vector_database.py          # 🔍 Vector storage and similarity search
@@ -118,10 +119,10 @@ chatbot-streamlit-demo/
 
 ## 🛠️ Available Applications
 
-| Application              | Description                                   | Use Case                                  |
-| ------------------------ | --------------------------------------------- | ----------------------------------------- |
-| `rag_chatbot_app.py`     | **RAG-enabled chatbot** with document upload | 🎯 **Primary app** - Upload docs and chat |
-| `streamlit_chat_app.py`  | Simple chatbot with Google Gemini            | 💬 Basic AI conversations                 |
+| Application             | Description                                  | Use Case                                  |
+| ----------------------- | -------------------------------------------- | ----------------------------------------- |
+| `rag_chatbot_app.py`    | **RAG-enabled chatbot** with document upload | 🎯 **Primary app** - Upload docs and chat |
+| `streamlit_chat_app.py` | Simple chatbot with Google Gemini            | 💬 Basic AI conversations                 |
 
 ## 🔧 Configuration
 
