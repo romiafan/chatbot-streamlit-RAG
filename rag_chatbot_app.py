@@ -7,6 +7,7 @@ import streamlit as st
 from google import genai
 import os
 import time
+import json  # for exporting sources as JSON
 from typing import List, Dict, Any, Optional
 
 # Import our custom modules
@@ -784,25 +785,27 @@ with chat_container:
             
             # Show context sources if available
             if "sources" in msg and msg["sources"]:
-                with st.expander(f"📚 Sources Used ({len(msg['sources'])} documents)", expanded=False):
+                exp_label = f"📚 Sources Used ({len(msg['sources'])} documents)"
+                with st.expander(exp_label, expanded=False):
                     for idx, source in enumerate(msg["sources"], 1):
                         relevance_score = 1 - source['distance']
-                        relevance_color = "var(--success-color)" if relevance_score > 0.8 else "var(--warning-color)" if relevance_score > 0.6 else "var(--error-color)"
-                        
+                        relevance_color = (
+                            "var(--success-color)" if relevance_score > 0.8 else
+                            "var(--warning-color)" if relevance_score > 0.6 else
+                            "var(--error-color)"
+                        )
                         st.markdown(f"""
                         <div class="modern-card" style="margin: 0.5rem 0; padding: 1rem;">
                             <div style="display: flex; justify-content: between; align-items: start; gap: 1rem;">
                                 <div style="flex: 1;">
                                     <div style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">
                                         📄 {source['source']} 
-                                        <span style="font-size: 0.75rem; background: var(--surface-variant); 
-                                                   padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); 
-                                                   margin-left: 0.5rem;">
+                                        <span style="font-size: 0.75rem; background: var(--surface-variant); padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); margin-left: 0.5rem;">
                                             Chunk {source['chunk_index']}
                                         </span>
                                     </div>
                                     <div style="color: var(--text-secondary); line-height: 1.6; font-size: 0.9rem;">
-                                        {source["preview"][:300]}{'...' if len(source["preview"]) > 300 else ''}
+                                        {source['preview'][:300]}{'...' if len(source['preview']) > 300 else ''}
                                     </div>
                                 </div>
                                 <div style="text-align: center; min-width: 80px;">
@@ -814,6 +817,19 @@ with chat_container:
                             </div>
                         </div>
                         """, unsafe_allow_html=True)
+
+                # Provide downloadable JSON for sources of this assistant message
+                try:
+                    sources_json = json.dumps(msg["sources"], ensure_ascii=False, indent=2)
+                    st.download_button(
+                        label=f"⬇️ Export Sources JSON (message {i+1})",
+                        file_name=f"sources_message_{i+1}.json",
+                        mime="application/json",
+                        data=sources_json,
+                        key=f"download_sources_{i}"
+                    )
+                except Exception as _e:
+                    st.caption(f"Unable to export sources JSON: {_e}")
 
 # --- 7. Handle User Input ---
 
