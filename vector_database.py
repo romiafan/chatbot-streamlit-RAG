@@ -6,13 +6,17 @@ Handles document embeddings, storage, and retrieval using ChromaDB
 import streamlit as st
 import os
 import tempfile
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union, Sequence
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 from langchain.docstore.document import Document as LangChainDocument
 import uuid
 import json
+
+# Type aliases for Chroma metadata (must be JSON-serializable primitives)
+MetadataValue = Union[str, int, float, bool, None]
+MetadataDict = Dict[str, MetadataValue]
 
 
 class VectorDatabase:
@@ -21,7 +25,7 @@ class VectorDatabase:
     def __init__(self, 
                  collection_name: str = "document_store", 
                  embedding_model: str = "all-MiniLM-L6-v2",
-                 persist_directory: str = None):
+                 persist_directory: Optional[str] = None):
         """
         Initialize the vector database
         
@@ -122,23 +126,55 @@ class VectorDatabase:
         try:
             # Generate embeddings
             embeddings = self.embed_documents(documents)
-            
+
+            if not embeddings:
+                st.warning("No embeddings generated; aborting add")
+                return False
+
+            # Convert embeddings to numpy array of type float32 for consistency
+            import numpy as np
+            embeddings_array = np.array(embeddings, dtype=np.float32)
+
             # Prepare data for ChromaDB
             ids = [str(uuid.uuid4()) for _ in documents]
             texts = [doc.page_content for doc in documents]
-            metadatas = [doc.metadata for doc in documents]
-            
+
+            # Sanitize metadata: keep only JSON-friendly primitives (str, int, float, bool) and skip None/complex
+            primitive_types = (str, int, float, bool)
+
+            def sanitize_metadata(md: Dict[str, Any]) -> MetadataDict:
+                cleaned: MetadataDict = {}
+                for k, v in (md or {}).items():
+                    key = str(k)
+                    if isinstance(v, primitive_types):
+                        cleaned[key] = v
+                    elif v is None:
+                        continue
+                    else:
+                        # Coerce other types to string safely
+                        try:
+                            cleaned[key] = str(v)
+                        except Exception:
+                            continue
+                return cleaned
+
+            metadatas_list: List[MetadataDict] = [
+                sanitize_metadata(getattr(doc, "metadata", {}) or {}) for doc in documents
+            ]
+
             # Add to collection
-            self.collection.add(
+            # Suppress potential static type checker complaint; runtime API accepts List[Dict[str, primitive]]
+            # Cast to Any to satisfy static type checker differences between our simplified MetadataDict and Chroma's Metadata
+            metadatas_param: Any = metadatas_list  # type: ignore[assignment]
+            self.collection.add(  # type: ignore
                 ids=ids,
-                embeddings=embeddings,
+                embeddings=embeddings_array.tolist(),  # ensure plain list
                 documents=texts,
-                metadatas=metadatas
+                metadatas=metadatas_param
             )
-            
+
             st.success(f"✅ Added {len(documents)} documents to vector database")
             return True
-            
         except Exception as e:
             st.error(f"Error adding documents to vector database: {str(e)}")
             return False
@@ -169,17 +205,29 @@ class VectorDatabase:
                 where=where,
                 include=["documents", "metadatas", "distances"]
             )
-            
-            # Format results
-            formatted_results = []
-            if results["documents"] and results["documents"][0]:
-                for i in range(len(results["documents"][0])):
-                    formatted_results.append({
-                        "document": results["documents"][0][i],
-                        "metadata": results["metadatas"][0][i] if results["metadatas"][0] else {},
-                        "distance": results["distances"][0][i] if results["distances"][0] else 0.0
-                    })
-            
+
+            # Defensive extraction to avoid key/index errors
+            docs_blocks = results.get("documents") or []
+            metas_blocks = results.get("metadatas") or []
+            dists_blocks = results.get("distances") or []
+            docs = docs_blocks[0] if docs_blocks and isinstance(docs_blocks[0], list) else []
+            metas = metas_blocks[0] if metas_blocks and isinstance(metas_blocks[0], list) else []
+            dists = dists_blocks[0] if dists_blocks and isinstance(dists_blocks[0], list) else []
+
+            formatted_results: List[Dict[str, Any]] = []
+            for i, doc in enumerate(docs):
+                meta = metas[i] if i < len(metas) else {}
+                dist = dists[i] if i < len(dists) else 0.0
+                if not isinstance(meta, dict):
+                    try:
+                        meta = dict(meta)  # type: ignore[arg-type]
+                    except Exception:
+                        meta = {}
+                formatted_results.append({
+                    "document": doc,
+                    "metadata": meta,
+                    "distance": dist,
+                })
             return formatted_results
             
         except Exception as e:

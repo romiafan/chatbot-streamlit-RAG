@@ -12,7 +12,27 @@ from typing import List, Dict, Any, Optional
 
 # Import our custom modules
 from document_processor import DocumentProcessor, create_document_processor
-from vector_database import VectorDatabase, get_vector_database, display_vector_db_info
+from vector_database import VectorDatabase  # Removed missing get_vector_database (and unused display_vector_db_info)
+
+# Fallback factory: original get_vector_database not found in vector_database module
+@st.cache_resource
+def get_vector_database(collection_name: str = "rag_chatbot_docs"):
+    """
+    Cached factory returning a VectorDatabase instance.
+
+    This substitutes the missing get_vector_database import while preserving
+    the existing call pattern elsewhere in the app.
+    """
+    try:
+        # Common constructor pattern
+        return VectorDatabase(collection_name)
+    except TypeError:
+        # Alternate named parameter
+        try:
+            return VectorDatabase(collection_name=collection_name)
+        except Exception:
+            # Last-resort no-arg construction
+            return VectorDatabase()
 
 # --- Modern CSS Styling ---
 def apply_custom_css():
@@ -348,6 +368,31 @@ if not embed_mode:
         <p>Intelligent conversations powered by your documents</p>
     </div>
     """, unsafe_allow_html=True)
+    # Quick How-To (top placement)
+    st.markdown(
+        """
+        <div class="modern-card" style="margin-top: -0.5rem; border: 1px solid var(--border-color);">
+            <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:0.75rem;">
+                <span style="font-size:1.5rem;">🛠️</span>
+                <h3 style="margin:0; font-size:1.1rem;">How to Use This AI Assistant</h3>
+            </div>
+            <ol style="margin:0; padding-left:1.1rem; line-height:1.6; font-size:0.9rem; color:var(--text-secondary);">
+                <li><strong>Add API Key</strong> in the sidebar (Google AI).</li>
+                <li><strong>Upload documents</strong> (PDF / DOCX / TXT).</li>
+                <li>Click <strong>Process Documents</strong> to index chunks.</li>
+                <li><strong>Ask questions</strong> – answers cite document sources.</li>
+                <li>Use the <strong>model selector</strong> & <strong>RAG toggles</strong> to refine responses.</li>
+            </ol>
+            <div style="margin-top:0.75rem; display:flex; flex-wrap:wrap; gap:0.5rem; font-size:0.7rem;">
+                <span style="background:var(--surface-variant); padding:4px 8px; border-radius:6px;">🔍 Semantic Search</span>
+                <span style="background:var(--surface-variant); padding:4px 8px; border-radius:6px;">📚 Source Attribution</span>
+                <span style="background:var(--surface-variant); padding:4px 8px; border-radius:6px;">⚙️ Adjustable Context</span>
+                <span style="background:var(--surface-variant); padding:4px 8px; border-radius:6px;">🧪 Model Fallback</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 else:
     # Compact top spacer
     st.markdown("<div style='margin-top:0.5rem'></div>", unsafe_allow_html=True)
@@ -435,10 +480,10 @@ with st.sidebar:
                 "forced": force,
             }
 
-        # Refresh models button with timestamp display
-        refresh_col1, refresh_col2 = st.columns([3,1])
-        with refresh_col2:
-            if st.button("Refresh", help="Re-discover available models (clears cache)"):
+        # Icon-only refresh button with tooltip
+        refresh_cols = st.columns([5,1])
+        with refresh_cols[1]:
+            if st.button("🔄", help="Refresh model list", key="refresh_models_btn"):
                 _discover_models(force=True)
         _discover_models(force=False)
 
@@ -964,116 +1009,93 @@ def get_chat_for_model(model: str):
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Create chat container with modern styling
-chat_container = st.container()
-
-with chat_container:
-    # Show welcome message if no messages
-    if not st.session_state.messages:
-        st.markdown("""
-        <div class="modern-card" style="text-align: center; background: linear-gradient(135deg, var(--surface), var(--surface-variant)); border: none;">
-            <div style="font-size: 2.5rem; margin-bottom: 1rem;">👋</div>
-            <h3 style="margin: 0; color: var(--text-primary);">Welcome to your AI Document Assistant</h3>
-            <p style="color: var(--text-secondary); margin: 1rem 0;">
-                Ask me anything about your uploaded documents, or have a general conversation. 
-                I'll use your documents to provide more accurate and contextual answers.
-            </p>
-            <div style="display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 1.5rem;">
-                <div style="background: var(--surface-variant); padding: 0.5rem 1rem; border-radius: var(--radius-md); font-size: 0.875rem;">
-                    💡 Ask about document content
-                </div>
-                <div style="background: var(--surface-variant); padding: 0.5rem 1rem; border-radius: var(--radius-md); font-size: 0.875rem;">
-                    🔍 Search for specific information
-                </div>
-                <div style="background: var(--surface-variant); padding: 0.5rem 1rem; border-radius: var(--radius-md); font-size: 0.875rem;">
-                    📊 Get summaries and insights
-                </div>
+chat_messages_html = []
+if not st.session_state.messages:
+    chat_messages_html.append(
+        """
+        <div style='text-align:center; padding:1.5rem 0;'>
+            <div style='font-size:2.25rem; margin-bottom:0.5rem;'>👋</div>
+            <div style='font-weight:600; font-size:1.05rem;'>Welcome to your AI Document Assistant</div>
+            <div style='font-size:0.85rem; color:var(--text-secondary); margin-top:0.5rem;'>Upload documents then ask focused questions for best results.</div>
+        </div>
+        """
+    )
+for i, msg in enumerate(st.session_state.messages):
+    if msg["role"] == "user":
+        chat_messages_html.append(f"""
+        <div style='display:flex; justify-content:flex-end; margin:1rem 0;'>
+            <div style='max-width:78%; background:linear-gradient(135deg, var(--primary-color), var(--accent-color)); color:white; padding:0.85rem 1rem; border-radius:var(--radius-lg); box-shadow:var(--shadow-md); font-size:0.9rem; line-height:1.5;'>
+                <div style='opacity:0.85; font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.25rem;'>You</div>
+                {msg['content']}
             </div>
         </div>
-        """, unsafe_allow_html=True)
-    
-    # Display chat history with modern styling
-    for i, msg in enumerate(st.session_state.messages):
-        if msg["role"] == "user":
-            st.markdown(f"""
-            <div style="display: flex; justify-content: flex-end; margin: 1.5rem 0;">
-                <div style="max-width: 80%; background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%); 
-                           color: white; padding: 1rem 1.25rem; border-radius: var(--radius-lg); 
-                           box-shadow: var(--shadow-md);">
-                    <div style="font-weight: 500; margin-bottom: 0.25rem; opacity: 0.9; font-size: 0.875rem;">You</div>
-                    <div style="line-height: 1.6;">{msg["content"]}</div>
+        """)
+    else:
+        actual_model = msg.get("model") or st.session_state.get("selected_model", "gemini-1.5-flash")
+        requested_model = msg.get("requested_model", actual_model)
+        display_model = actual_model if requested_model == actual_model else f"{requested_model}→{actual_model}"
+        fallback_attr = "title='Model fallback occurred'" if requested_model != actual_model else ""
+        chat_messages_html.append(f"""
+        <div style='display:flex; justify-content:flex-start; margin:1rem 0;'>
+            <div style='max-width:85%; background:var(--surface); border:1px solid var(--border-color); padding:0.9rem 1rem; border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); font-size:0.9rem; line-height:1.55;'>
+                <div style='display:flex; align-items:center; gap:0.5rem; margin-bottom:0.4rem;'>
+                    <div style='font-size:1.1rem;'>🧠</div>
+                    <div style='font-weight:500; font-size:0.75rem; letter-spacing:0.05em; text-transform:uppercase;'>AI Assistant</div>
+                    <span {fallback_attr} style='background:var(--surface-variant); color:var(--text-secondary); font-size:0.55rem; padding:2px 6px; border-radius:4px; text-transform:uppercase; letter-spacing:0.05em;'>{display_model}</span>
+                    <button class='copy-btn' data-target='assistant-msg-{i}' style='margin-left:auto; background:var(--primary-color); color:white; border:none; padding:2px 8px; border-radius:6px; cursor:pointer; font-size:0.6rem;'>Copy</button>
                 </div>
+                <div id='assistant-msg-{i}' style='white-space:pre-wrap;'>{msg['content']}</div>
             </div>
-            """, unsafe_allow_html=True)
-        else:
-            actual_model = msg.get("model") or st.session_state.get("selected_model", "gemini-1.5-flash")
-            requested_model = msg.get("requested_model", actual_model)
-            fallback_note = ""
-            display_model = actual_model
-            if requested_model and requested_model != actual_model:
-                display_model = f"{requested_model}→{actual_model}"
-                fallback_note = " title='Model fallback occurred; resolved to available model'"
-            st.markdown(f"""
-            <div style="display: flex; justify-content: flex-start; margin: 1.5rem 0;">
-                <div style="max-width: 85%; background: var(--surface); border: 1px solid var(--border-color); padding: 1rem 1.25rem; border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); position: relative;">
-                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
-                        <div style="font-size: 1.25rem;">🧠</div>
-                        <div style="font-weight: 500; color: var(--text-primary); font-size: 0.875rem;">AI Assistant</div>
-                        <span style="background: var(--surface-variant); color: var(--text-secondary); font-size:0.6rem; padding:2px 6px; border-radius:4px; text-transform:uppercase; letter-spacing:0.05em;"{fallback_note}>{display_model}</span>
-                        <button class="copy-btn" data-target="assistant-msg-{i}" style="margin-left:auto; background: var(--primary-color); color:white; border:none; padding:2px 8px; border-radius:6px; cursor:pointer; font-size:0.65rem;">Copy</button>
-                    </div>
-                    <div id="assistant-msg-{i}" style="line-height: 1.7; color: var(--text-primary); white-space: pre-wrap;">{msg["content"]}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Show context sources if available
-            if "sources" in msg and msg["sources"]:
-                exp_label = f"📚 Sources Used ({len(msg['sources'])} documents)"
-                with st.expander(exp_label, expanded=False):
-                    for idx, source in enumerate(msg["sources"], 1):
-                        relevance_score = 1 - source['distance']
-                        relevance_color = (
-                            "var(--success-color)" if relevance_score > 0.8 else
-                            "var(--warning-color)" if relevance_score > 0.6 else
-                            "var(--error-color)"
-                        )
-                        st.markdown(f"""
-                        <div class="modern-card" style="margin: 0.5rem 0; padding: 1rem;">
-                            <div style="display: flex; justify-content: between; align-items: start; gap: 1rem;">
-                                <div style="flex: 1;">
-                                    <div style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">
-                                        📄 {source['source']} 
-                                        <span style="font-size: 0.75rem; background: var(--surface-variant); padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); margin-left: 0.5rem;">
-                                            Chunk {source['chunk_index']}
-                                        </span>
-                                    </div>
-                                    <div style="color: var(--text-secondary); line-height: 1.6; font-size: 0.9rem;">
-                                        {source['preview'][:300]}{'...' if len(source['preview']) > 300 else ''}
-                                    </div>
-                                </div>
-                                <div style="text-align: center; min-width: 80px;">
-                                    <div style="font-size: 0.75rem; color: var(--text-tertiary); margin-bottom: 0.25rem;">Relevance</div>
-                                    <div style="font-weight: bold; color: {relevance_color}; font-size: 1rem;">
-                                        {relevance_score:.0%}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+        </div>
+        """)
 
-                # Provide downloadable JSON for sources of this assistant message
-                try:
-                    sources_json = json.dumps(msg["sources"], ensure_ascii=False, indent=2)
-                    st.download_button(
-                        label=f"⬇️ Export Sources JSON (message {i+1})",
-                        file_name=f"sources_message_{i+1}.json",
-                        mime="application/json",
-                        data=sources_json,
-                        key=f"download_sources_{i}"
-                    )
-                except Exception as _e:
-                    st.caption(f"Unable to export sources JSON: {_e}")
+st.markdown(
+    f"""
+    <div class='chat-window' style='max-height:620px; overflow-y:auto; padding:0.75rem 0.75rem 0.25rem 0.75rem; border:1px solid var(--border-color); border-radius:var(--radius-lg); background:var(--surface-variant);'>
+        {''.join(chat_messages_html)}
+    </div>
+    <script>setTimeout(()=>{{const cw=document.querySelector('.chat-window'); if(cw) cw.scrollTop=cw.scrollHeight;}}, 50);</script>
+    """,
+    unsafe_allow_html=True
+)
+
+# Show sources blocks (outside scroll to keep window performant)
+for i, msg in enumerate(st.session_state.messages):
+    if msg.get("role") == "assistant" and msg.get("sources"):
+        exp_label = f"📚 Sources Used ({len(msg['sources'])} documents)"
+        with st.expander(exp_label, expanded=False):
+            for idx, source in enumerate(msg["sources"], 1):
+                relevance_score = 1 - source['distance']
+                relevance_color = (
+                    "var(--success-color)" if relevance_score > 0.8 else
+                    "var(--warning-color)" if relevance_score > 0.6 else
+                    "var(--error-color)"
+                )
+                st.markdown(f"""
+                <div class='modern-card' style='margin:0.5rem 0; padding:1rem;'>
+                    <div style='display:flex; justify-content:between; align-items:start; gap:1rem;'>
+                        <div style='flex:1;'>
+                            <div style='font-weight:600; color:var(--text-primary); margin-bottom:0.5rem;'>📄 {source['source']} <span style='font-size:0.7rem; background:var(--surface-variant); padding:2px 6px; border-radius:4px;'>Chunk {source['chunk_index']}</span></div>
+                            <div style='color:var(--text-secondary); font-size:0.8rem; line-height:1.5;'>{source['preview'][:300]}{'...' if len(source['preview'])>300 else ''}</div>
+                        </div>
+                        <div style='text-align:center; min-width:70px;'>
+                            <div style='font-size:0.6rem; color:var(--text-tertiary); margin-bottom:0.25rem;'>Relevance</div>
+                            <div style='font-weight:700; color:{relevance_color}; font-size:0.9rem;'>{relevance_score:.0%}</div>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+        try:
+            sources_json = json.dumps(msg["sources"], ensure_ascii=False, indent=2)
+            st.download_button(
+                label=f"⬇️ Export Sources JSON (message {i+1})",
+                file_name=f"sources_message_{i+1}.json",
+                mime="application/json",
+                data=sources_json,
+                key=f"download_sources_{i}"
+            )
+        except Exception as _e:
+            st.caption(f"Unable to export sources JSON: {_e}")
 
 # --- 7. Handle User Input ---
 
@@ -1228,61 +1250,6 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
 
 st.markdown("<div style='margin: 3rem 0;'></div>", unsafe_allow_html=True)
 
-# Modern expandable help section
-with st.expander("💡 How to Use This AI Assistant", expanded=False):
-    st.markdown("""
-    <div style="padding: 1rem 0;">
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem; margin-bottom: 2rem;">
-            <div class="modern-card">
-                <h4 style="margin: 0 0 1rem 0; color: var(--primary-color); display: flex; align-items: center; gap: 0.5rem;">
-                    <span>🚀</span> Getting Started
-                </h4>
-                <ol style="margin: 0; padding-left: 1.25rem; line-height: 1.8;">
-                    <li>Enter your Google AI API key in the sidebar</li>
-                    <li>Upload documents (PDF, DOCX, or TXT)</li>
-                    <li>Click "Process Documents" to index them</li>
-                    <li>Start asking questions about your content</li>
-                </ol>
-            </div>
-            
-            <div class="modern-card">
-                <h4 style="margin: 0 0 1rem 0; color: var(--success-color); display: flex; align-items: center; gap: 0.5rem;">
-                    <span>⚡</span> Pro Features
-                </h4>
-                <ul style="margin: 0; padding-left: 1.25rem; line-height: 1.8;">
-                    <li><strong>Smart Search:</strong> AI-powered semantic search</li>
-                    <li><strong>Source Attribution:</strong> See exactly which documents were used</li>
-                    <li><strong>Flexible Context:</strong> Adjust how much context to use</li>
-                    <li><strong>Multi-format:</strong> Support for various document types</li>
-                </ul>
-            </div>
-        </div>
-        
-        <div class="modern-card" style="background: linear-gradient(135deg, var(--surface-variant), var(--surface)); border: none;">
-            <h4 style="margin: 0 0 1rem 0; color: var(--accent-color); display: flex; align-items: center; gap: 0.5rem;">
-                <span>💡</span> Tips for Best Results
-            </h4>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
-                <div style="background: var(--surface); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-light);">
-                    <strong>📝 Ask Specific Questions</strong><br>
-                    <span style="color: var(--text-secondary); font-size: 0.9rem;">Instead of "What's in the document?", try "What are the main findings about X?"</span>
-                </div>
-                <div style="background: var(--surface); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-light);">
-                    <strong>📚 Upload Related Content</strong><br>
-                    <span style="color: var(--text-secondary); font-size: 0.9rem;">Group related documents together for better contextual answers</span>
-                </div>
-                <div style="background: var(--surface); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-light);">
-                    <strong>🔍 Check Sources</strong><br>
-                    <span style="color: var(--text-secondary); font-size: 0.9rem;">Review the source documents to verify and learn more</span>
-                </div>
-                <div style="background: var(--surface); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-light);">
-                    <strong>⚙️ Adjust Settings</strong><br>
-                    <span style="color: var(--text-secondary); font-size: 0.9rem;">Fine-tune context length and document count for your needs</span>
-                </div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
 
 # Modern footer
 st.markdown("""
