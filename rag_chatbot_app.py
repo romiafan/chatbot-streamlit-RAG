@@ -374,19 +374,25 @@ with st.sidebar:
         def _discover_models():
             """Populate st.session_state.available_models with discovered Gemini flash models.
             Falls back to a static list if discovery fails or returns nothing."""
-            if "available_models" in st.session_state:
+            if "available_models" in st.session_state and not st.session_state.get("_force_refresh_models"):
                 return
+            env_default = os.getenv("GEMINI_DEFAULT_MODEL")
             base_fallback = ["gemini-1.5-flash", "gemini-1.5-flash-8b"]
+            if env_default:
+                env_base = env_default.split("/", 1)[1] if env_default.startswith("models/") else env_default
+                if env_base not in base_fallback:
+                    base_fallback.insert(0, env_base)
             models = []
             try:
                 client = st.session_state.get("genai_client")
                 if client is not None:
-                    for m in client.models.list():  # type: ignore[attr-defined]
+                    raw_list = list(client.models.list())  # type: ignore[attr-defined]
+                    for m in raw_list:
                         name = getattr(m, "name", "") or ""
                         if name.startswith("models/"):
                             name = name.split("/", 1)[1]
                         lname = name.lower()
-                        # Heuristic: include flash variants (free / fast)
+                        # Include flash variants excluding pro/vision/experimental markers
                         if "flash" in lname and not any(x in lname for x in ["pro", "vision", "exp"]):
                             models.append(name)
             except Exception as e:  # noqa: BLE001
@@ -395,16 +401,38 @@ with st.sidebar:
             models = sorted(set(models))
             if not models:
                 models = base_fallback
-            # Always ensure base fallback models appear first preserving order
+            # Version-aware sorting: prefer higher major.minor (e.g., 2.5 > 1.5) while preserving flash variants
+            def _ver_key(model_name: str):
+                # Extract pattern gemini-X.Y-...
+                try:
+                    parts = model_name.split("-")
+                    # e.g. [gemini, 2.5, flash]
+                    for p in parts:
+                        if p.replace(".", "").isdigit() and "." in p:
+                            maj, min_ = p.split(".")
+                            return (int(maj), int(min_))
+                    # fallback if numeric not found
+                    return (0, 0)
+                except Exception:
+                    return (0, 0)
+            models_sorted = sorted(models, key=_ver_key, reverse=True)
+            # Ensure base fallback priority at front in given order (env default already inserted if provided)
             ordered = []
             for bf in base_fallback:
-                if bf in models and bf not in ordered:
+                if bf in models_sorted and bf not in ordered:
                     ordered.append(bf)
-            for m in models:
+            for m in models_sorted:
                 if m not in ordered:
                     ordered.append(m)
             st.session_state.available_models = ordered
+            st.session_state.pop("_force_refresh_models", None)
 
+        # Refresh models button
+        colm1, colm2 = st.columns([3,1])
+        with colm2:
+            if st.button("Refresh", help="Re-discover available models"):
+                st.session_state._force_refresh_models = True
+                _discover_models()
         _discover_models()
 
         available_models = st.session_state.get("available_models", ["gemini-1.5-flash", "gemini-1.5-flash-8b"])
@@ -851,23 +879,43 @@ if "model_chats" not in st.session_state:
     st.session_state.model_chats = {}
 
 def get_chat_for_model(model: str):
-    """Return (or lazily create) a chat object for a given model with fallback logic.
-    Tries variations with optional 'models/' prefix and base flash fallback."""
+    """Return (or lazily create) a chat object for a given model with extended fallback logic.
+    Order of attempts:
+      1. Requested model (raw & prefixed)
+      2. Env default (raw & prefixed) if different
+      3. 2.5 flash variants (standard & 8b) raw & prefixed
+      4. 1.5 flash variants (standard & 8b) raw & prefixed
+    Records resolution mapping so UI can show requested → actual if they differ."""
     if model in st.session_state.model_chats:
         return st.session_state.model_chats[model]
 
     client = st.session_state.genai_client
     tried = []
     candidates = []
-    base = model.split("/", 1)[1] if model.startswith("models/") else model
-    candidates.append(base)
-    if not base.startswith("models/"):
-        candidates.append(f"models/{base}")
-    # Primary fallbacks (ensure base flash variants appear last if distinct)
-    if base != "gemini-1.5-flash":
-        candidates.append("gemini-1.5-flash")
-    if base != "gemini-1.5-flash-8b":
-        candidates.append("gemini-1.5-flash-8b")
+
+    def _norm(name: str):
+        return name.split("/", 1)[1] if name.startswith("models/") else name
+    def _add_pair(name: str):
+        base = _norm(name)
+        raw = base
+        pref = f"models/{base}"
+        if raw not in candidates:
+            candidates.append(raw)
+        if pref not in candidates:
+            candidates.append(pref)
+
+    requested_base = _norm(model)
+    _add_pair(requested_base)
+
+    env_default = os.getenv("GEMINI_DEFAULT_MODEL")
+    if env_default:
+        env_base = _norm(env_default)
+        if env_base != requested_base:
+            _add_pair(env_base)
+
+    for fallback in ["gemini-2.5-flash", "gemini-2.5-flash-8b", "gemini-1.5-flash", "gemini-1.5-flash-8b"]:
+        if fallback != requested_base:
+            _add_pair(fallback)
 
     last_err = None
     for candidate in candidates:
@@ -875,15 +923,22 @@ def get_chat_for_model(model: str):
             continue
         tried.append(candidate)
         try:
-            st.session_state.model_chats[model] = client.chats.create(model=candidate)
-            # Store under original requested key but note actual model if different
-            actual = candidate.split("/", 1)[1] if candidate.startswith("models/") else candidate
-            st.session_state.model_chats[model]._actual_model = actual  # type: ignore[attr-defined]
-            return st.session_state.model_chats[model]
+            chat_obj = client.chats.create(model=candidate)
+            actual = _norm(candidate)
+            st.session_state.model_chats[model] = chat_obj
+            # Track resolution mapping
+            if "_model_resolution" not in st.session_state:
+                st.session_state._model_resolution = {}
+            st.session_state._model_resolution[model] = actual
+            # Attach attribute for quick access
+            try:
+                chat_obj._actual_model = actual  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            return chat_obj
         except Exception as e:  # noqa: BLE001
             last_err = e
             continue
-    # If we got here everything failed
     raise RuntimeError(f"Failed to create chat for model '{model}'. Tried: {tried}. Last error: {last_err}")
 
 # Initialize message history
@@ -932,14 +987,20 @@ with chat_container:
             </div>
             """, unsafe_allow_html=True)
         else:
-            model_tag = msg.get("model") or st.session_state.get("selected_model", "gemini-1.5-flash")
+            actual_model = msg.get("model") or st.session_state.get("selected_model", "gemini-1.5-flash")
+            requested_model = msg.get("requested_model", actual_model)
+            fallback_note = ""
+            display_model = actual_model
+            if requested_model and requested_model != actual_model:
+                display_model = f"{requested_model}→{actual_model}"
+                fallback_note = " title='Model fallback occurred; resolved to available model'"
             st.markdown(f"""
             <div style="display: flex; justify-content: flex-start; margin: 1.5rem 0;">
                 <div style="max-width: 85%; background: var(--surface); border: 1px solid var(--border-color); padding: 1rem 1.25rem; border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); position: relative;">
                     <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
                         <div style="font-size: 1.25rem;">🧠</div>
                         <div style="font-weight: 500; color: var(--text-primary); font-size: 0.875rem;">AI Assistant</div>
-                        <span style="background: var(--surface-variant); color: var(--text-secondary); font-size:0.6rem; padding:2px 6px; border-radius:4px; text-transform:uppercase; letter-spacing:0.05em;">{model_tag}</span>
+                        <span style="background: var(--surface-variant); color: var(--text-secondary); font-size:0.6rem; padding:2px 6px; border-radius:4px; text-transform:uppercase; letter-spacing:0.05em;"{fallback_note}>{display_model}</span>
                         <button class="copy-btn" data-target="assistant-msg-{i}" style="margin-left:auto; background: var(--primary-color); color:white; border:none; padding:2px 8px; border-radius:6px; cursor:pointer; font-size:0.65rem;">Copy</button>
                     </div>
                     <div id="assistant-msg-{i}" style="line-height: 1.7; color: var(--text-primary); white-space: pre-wrap;">{msg["content"]}</div>
@@ -1130,7 +1191,9 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         answer = response.text if hasattr(response, "text") else str(response)
         st.session_state.token_estimate_total += estimate_tokens(answer or "")
         st.session_state.message_count += 1
-        message_data = {"role": "assistant", "content": answer, "model": reply_model}
+        # Resolve actual model (fallback may have occurred)
+        chat_actual = getattr(st.session_state.model_chats.get(reply_model, {}), "_actual_model", reply_model)
+        message_data = {"role": "assistant", "content": answer, "model": chat_actual, "requested_model": reply_model}
         if sources_used:
             message_data["sources"] = sources_used
         st.session_state.messages.append(message_data)
