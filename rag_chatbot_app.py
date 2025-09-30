@@ -367,34 +367,94 @@ with st.sidebar:
             placeholder="Enter your API key..."
         )
     
-    # Model selection (free-tier friendly Gemini flash models)
+    # Dynamic model discovery & selection
     with st.container():
         st.markdown("#### 🤖 Model")
-        free_models = [
-            "gemini-1.5-flash",  # general purpose, fast
-            "gemini-1.5-flash-8b",  # smaller, cheaper
-        ]
-        # Provide backward compatibility if session already has a model not in list
-        if "selected_model" in st.session_state and st.session_state.selected_model not in free_models:
-            free_models.append(st.session_state.selected_model)
 
-        default_model = os.getenv("GEMINI_DEFAULT_MODEL", free_models[0])
+        def _discover_models():
+            """Populate st.session_state.available_models with discovered Gemini flash models.
+            Falls back to a static list if discovery fails or returns nothing."""
+            if "available_models" in st.session_state:
+                return
+            base_fallback = ["gemini-1.5-flash", "gemini-1.5-flash-8b"]
+            models = []
+            try:
+                client = st.session_state.get("genai_client")
+                if client is not None:
+                    for m in client.models.list():  # type: ignore[attr-defined]
+                        name = getattr(m, "name", "") or ""
+                        if name.startswith("models/"):
+                            name = name.split("/", 1)[1]
+                        lname = name.lower()
+                        # Heuristic: include flash variants (free / fast)
+                        if "flash" in lname and not any(x in lname for x in ["pro", "vision", "exp"]):
+                            models.append(name)
+            except Exception as e:  # noqa: BLE001
+                st.session_state._model_discovery_error = str(e)
+            # Normalize & fallback
+            models = sorted(set(models))
+            if not models:
+                models = base_fallback
+            # Always ensure base fallback models appear first preserving order
+            ordered = []
+            for bf in base_fallback:
+                if bf in models and bf not in ordered:
+                    ordered.append(bf)
+            for m in models:
+                if m not in ordered:
+                    ordered.append(m)
+            st.session_state.available_models = ordered
+
+        _discover_models()
+
+        available_models = st.session_state.get("available_models", ["gemini-1.5-flash", "gemini-1.5-flash-8b"])
+
+        # Attempt to honor environment default
+        env_default = os.getenv("GEMINI_DEFAULT_MODEL")
+        if env_default:
+            env_base = env_default.split("/", 1)[1] if env_default.startswith("models/") else env_default
+            if env_base not in available_models:
+                # Try relaxed matching (strip -latest or size suffix variants)
+                relaxed = env_base.replace("-latest", "")
+                mapped = next((m for m in available_models if m.startswith(relaxed)), None)
+                if mapped:
+                    env_base = mapped
+            if env_base in available_models:
+                # Prepend env model if not already first
+                if available_models[0] != env_base:
+                    available_models = [env_base] + [m for m in available_models if m != env_base]
+        # Initialize selection
         if "selected_model" not in st.session_state:
-            # Initialize with env override if valid
-            st.session_state.selected_model = default_model if default_model in free_models else free_models[0]
+            st.session_state.selected_model = available_models[0]
+        elif st.session_state.selected_model not in available_models:
+            # Preserve legacy/previous value by appending so selector can show it
+            available_models = available_models + [st.session_state.selected_model]
 
         chosen_model = st.selectbox(
             "Gemini Model",
-            options=free_models,
-            index=free_models.index(st.session_state.selected_model) if st.session_state.selected_model in free_models else 0,
-            help="Choose a free Gemini Flash model. Changing this will reset the current chat session.",
+            options=available_models,
+            index=available_models.index(st.session_state.selected_model) if st.session_state.selected_model in available_models else 0,
+            help="Choose an available Gemini Flash model. List is discovered dynamically.",
         )
+
+        model_warning = None
+        if env_default and st.session_state.selected_model != env_default and env_default not in available_models:
+            model_warning = f"Env default '{env_default}' not found; using '{st.session_state.selected_model}'."
+        if hasattr(st.session_state, "_model_discovery_error"):
+            model_warning = f"Model discovery issue: {getattr(st.session_state, '_model_discovery_error')} (showing fallback list)"
+        if st.session_state.selected_model not in st.session_state.get("available_models", []):
+            # Provide a gentle nudge; suggest first 3 available
+            suggestions = ", ".join(st.session_state.get("available_models", [])[:3])
+            model_warning = f"Selected model '{st.session_state.selected_model}' not in discovered list. Suggestions: {suggestions}"
+        if model_warning:
+            st.info(f"ℹ️ {model_warning}")
 
         if chosen_model != st.session_state.selected_model:
             st.session_state.selected_model = chosen_model
-            # Reset chat so subsequent messages use new model
+            # Reset chats & messages for consistency
             st.session_state.pop("chat", None)
             st.session_state.pop("messages", None)
+            st.session_state.pop("model_chats", None)
             st.rerun()
 
     st.divider()
@@ -791,15 +851,40 @@ if "model_chats" not in st.session_state:
     st.session_state.model_chats = {}
 
 def get_chat_for_model(model: str):
-    if model not in st.session_state.model_chats:
+    """Return (or lazily create) a chat object for a given model with fallback logic.
+    Tries variations with optional 'models/' prefix and base flash fallback."""
+    if model in st.session_state.model_chats:
+        return st.session_state.model_chats[model]
+
+    client = st.session_state.genai_client
+    tried = []
+    candidates = []
+    base = model.split("/", 1)[1] if model.startswith("models/") else model
+    candidates.append(base)
+    if not base.startswith("models/"):
+        candidates.append(f"models/{base}")
+    # Primary fallbacks (ensure base flash variants appear last if distinct)
+    if base != "gemini-1.5-flash":
+        candidates.append("gemini-1.5-flash")
+    if base != "gemini-1.5-flash-8b":
+        candidates.append("gemini-1.5-flash-8b")
+
+    last_err = None
+    for candidate in candidates:
+        if candidate in tried:
+            continue
+        tried.append(candidate)
         try:
-            st.session_state.model_chats[model] = st.session_state.genai_client.chats.create(model=model)
-        except Exception:
-            if model != "gemini-1.5-flash":
-                st.session_state.model_chats[model] = st.session_state.genai_client.chats.create(model="gemini-1.5-flash")
-            else:
-                raise
-    return st.session_state.model_chats[model]
+            st.session_state.model_chats[model] = client.chats.create(model=candidate)
+            # Store under original requested key but note actual model if different
+            actual = candidate.split("/", 1)[1] if candidate.startswith("models/") else candidate
+            st.session_state.model_chats[model]._actual_model = actual  # type: ignore[attr-defined]
+            return st.session_state.model_chats[model]
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            continue
+    # If we got here everything failed
+    raise RuntimeError(f"Failed to create chat for model '{model}'. Tried: {tried}. Last error: {last_err}")
 
 # Initialize message history
 if "messages" not in st.session_state:
@@ -847,15 +932,15 @@ with chat_container:
             </div>
             """, unsafe_allow_html=True)
         else:
+            model_tag = msg.get("model") or st.session_state.get("selected_model", "gemini-1.5-flash")
             st.markdown(f"""
             <div style="display: flex; justify-content: flex-start; margin: 1.5rem 0;">
-                <div style="max-width: 85%; background: var(--surface); border: 1px solid var(--border-color);
-                           padding: 1rem 1.25rem; border-radius: var(--radius-lg); 
-                           box-shadow: var(--shadow-sm);">
+                <div style="max-width: 85%; background: var(--surface); border: 1px solid var(--border-color); padding: 1rem 1.25rem; border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); position: relative;">
                     <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
                         <div style="font-size: 1.25rem;">🧠</div>
                         <div style="font-weight: 500; color: var(--text-primary); font-size: 0.875rem;">AI Assistant</div>
-                        <button onclick="navigator.clipboard.writeText(document.getElementById('assistant-msg-{i}').innerText); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500);" style="margin-left:auto; background: var(--primary-color); color:white; border:none; padding:2px 8px; border-radius:6px; cursor:pointer; font-size:0.65rem;">Copy</button>
+                        <span style="background: var(--surface-variant); color: var(--text-secondary); font-size:0.6rem; padding:2px 6px; border-radius:4px; text-transform:uppercase; letter-spacing:0.05em;">{model_tag}</span>
+                        <button class="copy-btn" data-target="assistant-msg-{i}" style="margin-left:auto; background: var(--primary-color); color:white; border:none; padding:2px 8px; border-radius:6px; cursor:pointer; font-size:0.65rem;">Copy</button>
                     </div>
                     <div id="assistant-msg-{i}" style="line-height: 1.7; color: var(--text-primary); white-space: pre-wrap;">{msg["content"]}</div>
                 </div>
@@ -974,15 +1059,14 @@ if not limit_reached:
                 key="modern_chat_input"
             )
         with cols[1]:
-            # Allow per-message model choice (reuse existing free model list)
-            free_models = [
-                "gemini-1.5-flash",
-                "gemini-1.5-flash-8b",
-            ]
+            # Allow per-message model choice using discovered list
+            discovered = st.session_state.get("available_models") or [st.session_state.get("selected_model", "gemini-1.5-flash")]
+            base_sel = st.session_state.get("selected_model") or discovered[0]
+            idx = discovered.index(base_sel) if base_sel in discovered else 0
             chosen_msg_model = st.selectbox(
                 "Model",
-                free_models,
-                index=free_models.index(st.session_state.get("selected_model", free_models[0])) if st.session_state.get("selected_model", free_models[0]) in free_models else 0,
+                discovered,
+                index=idx,
                 help="Model to use for this next message"
             )
 
@@ -1199,3 +1283,40 @@ button:focus, input:focus, textarea:focus {
 }
 </style>
 """, unsafe_allow_html=True)
+
+# Inject a small JS snippet once to handle all copy buttons reliably
+st.markdown(
+    """
+    <script>
+    (function() {
+        function attach() {
+            document.querySelectorAll('.copy-btn').forEach(btn => {
+                if (btn.dataset._bound) return;
+                btn.dataset._bound = '1';
+                btn.addEventListener('click', async () => {
+                    const targetId = btn.getAttribute('data-target');
+                    const el = document.getElementById(targetId);
+                    if (!el) return;
+                    try {
+                        await navigator.clipboard.writeText(el.innerText);
+                        const original = btn.innerText;
+                        btn.innerText = 'Copied!';
+                        btn.disabled = true;
+                        setTimeout(()=>{ btn.innerText = original; btn.disabled = false; }, 1400);
+                    } catch(e) {
+                        console.warn('Copy failed', e);
+                        btn.innerText = 'Failed';
+                        setTimeout(()=>{ btn.innerText = 'Copy'; }, 1400);
+                    }
+                });
+            });
+        }
+        // Initial attach & on mutation (Streamlit re-renders root frequently)
+        const observer = new MutationObserver(() => attach());
+        observer.observe(document.body, { childList: true, subtree: true });
+        attach();
+    })();
+    </script>
+    """,
+    unsafe_allow_html=True
+)
