@@ -33,6 +33,13 @@ A modern, intelligent **Retrieval-Augmented Generation (RAG)** chatbot with a be
 - 🎯 **Context Governance**: Adjustable number of retrieved chunks and max context length
 - 🧮 **Lightweight Token Estimation**: Heuristic chars/4 running total (no extra deps)
 - 🚦 **Message Limit Safeguard**: Hard cap (default 50) with 80% early warning
+- 🧲 **Persistent Duplicate Detection**: Chunk hashes stored in metadata to avoid re-embedding across sessions
+- 🔧 **Adjustable Chunking**: Tune chunk size & overlap from sidebar (expander)
+- 🗂️ **Batch Source Export**: Download all RAG source chunks as JSON
+- 📥 **Per-Response Source Export**: Export sources for any single answer
+- 📋 **Copy Answer Button**: One-click copy for each assistant reply
+- 🔀 **Per-Message Model Choice**: Select model for each prompt independently
+- 🔢 **Optional Precise Token Counting**: Uses `tiktoken` automatically if installed; falls back gracefully
 
 ### 🌟 **User Experience**
 
@@ -168,6 +175,7 @@ CHROMA_PERSIST_DIRECTORY=./vector_db        # Persist embeddings between restart
 ```
 
 Notes:
+
 - If `GEMINI_DEFAULT_MODEL` not set, a sensible free model is chosen.
 - `EMBED_MODE` can also be activated via URL query param: `?embed=1`.
 - Message limit shows a toast at 80% usage; once reached, only Reset Chat is allowed.
@@ -238,6 +246,12 @@ Notes:
 - ✅ Duplicate chunk hashing prevents re-embedding identical content within a session
 - ✅ Expanded sidebar Quick Stats: docs, messages used, token estimate, current model
 - ✅ Clearer success messaging: highlights number of new vs skipped duplicate chunks
+- ✅ Persistent dedupe (hash metadata) prevents re-embedding after restarts when using same collection
+- ✅ Adjustable chunk size & overlap controls
+- ✅ Per-message model selection (multi-model conversations)
+- ✅ Copy-to-clipboard button on assistant messages
+- ✅ Per-response & batch JSON export of sources
+- ✅ Optional precise token counting via `tiktoken` (fallback heuristic if unavailable)
 
 ### v2.0 UI/UX Overhaul (Previous Major Release)
 

@@ -402,6 +402,33 @@ with st.sidebar:
     # RAG Settings Section
     with st.container():
         st.markdown("#### 📚 RAG Configuration")
+
+        # Chunking controls (adjustable) - recreate processor if changed
+        default_chunk_size = st.session_state.get("_chunk_size", 1000)
+        default_overlap = st.session_state.get("_chunk_overlap", 200)
+        with st.expander("🔧 Chunk Settings", expanded=False):
+            new_chunk_size = st.number_input(
+                "Chunk Size (characters)",
+                min_value=200, max_value=4000, step=100,
+                value=default_chunk_size,
+                help="Length of each text chunk for embedding. Larger = fewer, bigger chunks; smaller = finer retrieval granularity."
+            )
+            new_chunk_overlap = st.number_input(
+                "Chunk Overlap",
+                min_value=0, max_value=1000, step=50,
+                value=default_overlap,
+                help="Characters of overlap between adjacent chunks to preserve context continuity."
+            )
+            if (new_chunk_size != default_chunk_size) or (new_chunk_overlap != default_overlap):
+                st.session_state._chunk_size = int(new_chunk_size)
+                st.session_state._chunk_overlap = int(new_chunk_overlap)
+                # Recreate document processor with new settings
+                from document_processor import DocumentProcessor
+                st.session_state.doc_processor = DocumentProcessor(
+                    chunk_size=st.session_state._chunk_size,
+                    chunk_overlap=st.session_state._chunk_overlap
+                )
+                st.info(f"🔄 Chunk settings updated: size={st.session_state._chunk_size}, overlap={st.session_state._chunk_overlap}. Re-process documents to apply.")
         
         use_rag = st.checkbox(
             "Enable RAG", 
@@ -498,6 +525,26 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True)
 
+    # Batch export of all sources (if any assistant messages with sources)
+    all_sources = []
+    if "messages" in st.session_state:
+        for m in st.session_state.messages:
+            if m.get("role") == "assistant" and m.get("sources"):
+                all_sources.extend(m["sources"])
+    if all_sources:
+        try:
+            import json as _json
+            export_data = _json.dumps(all_sources, ensure_ascii=False, indent=2)
+            st.download_button(
+                "⬇️ Export All Sources JSON",
+                data=export_data,
+                file_name="all_sources.json",
+                mime="application/json",
+                help="Download a consolidated JSON of every source chunk used so far"
+            )
+        except Exception:
+            pass
+
 # --- 3. API Key Validation ---
 
 if not google_api_key:
@@ -519,7 +566,11 @@ if ("genai_client" not in st.session_state) or (getattr(st.session_state, "_last
 
 # Initialize document processor
 if "doc_processor" not in st.session_state:
-    st.session_state.doc_processor = create_document_processor()
+    # Respect any previously chosen chunk parameters
+    chunk_size = st.session_state.get("_chunk_size", 1000)
+    chunk_overlap = st.session_state.get("_chunk_overlap", 200)
+    from document_processor import DocumentProcessor as _DP
+    st.session_state.doc_processor = _DP(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
 # Initialize vector database
 if "vector_db" not in st.session_state:
@@ -625,8 +676,22 @@ with upload_container:
                         import hashlib as _hashlib
                         unique_docs = []
                         skipped = 0
+
+                        # Build an existing hash set from persisted collection once per run (metadata scan)
+                        existing_hashes = set()
+                        try:
+                            existing = st.session_state.vector_db.collection.get(include=["metadatas"], limit=100000)
+                            for meta in existing.get("metadatas", []) or []:
+                                if not meta:
+                                    continue
+                                for m in meta if isinstance(meta, list) else [meta]:
+                                    h = m.get("chunk_hash") if isinstance(m, dict) else None
+                                    if h:
+                                        existing_hashes.add(h)
+                        except Exception:
+                            pass
+
                         for d in documents:
-                            # LangChain Document objects have .page_content; ensure safe extraction
                             content = getattr(d, 'page_content', None)
                             if content is None and isinstance(d, dict):
                                 content = d.get('page_content') or d.get('document')
@@ -634,10 +699,21 @@ with upload_container:
                             if not text_for_hash:
                                 continue
                             h = _hashlib.sha1(text_for_hash.encode('utf-8', errors='ignore')).hexdigest()
-                            if h in st.session_state.chunk_hashes:
+                            if h in st.session_state.chunk_hashes or h in existing_hashes:
                                 skipped += 1
                                 continue
                             st.session_state.chunk_hashes.add(h)
+                            # attach hash to metadata for persistence
+                            try:
+                                meta_attr = getattr(d, 'metadata', None)
+                                if meta_attr is not None and isinstance(meta_attr, dict):
+                                    meta_attr['chunk_hash'] = h
+                                elif isinstance(d, dict):
+                                    d.setdefault('metadata', {})
+                                    if isinstance(d['metadata'], dict):
+                                        d['metadata']['chunk_hash'] = h
+                            except Exception:
+                                pass
                             unique_docs.append(d)
 
                         success = True
@@ -710,18 +786,20 @@ if "vector_db" in st.session_state:
 if not embed_mode:
     st.markdown("### 💬 Conversation")
 
-# Initialize chat session
-if "chat" not in st.session_state:
-    # Use selected free model (fallback to gemini-1.5-flash if missing)
-    model_name = st.session_state.get("selected_model", "gemini-1.5-flash")
-    try:
-        st.session_state.chat = st.session_state.genai_client.chats.create(model=model_name)
-    except Exception:
-        # Fallback safety
-        if model_name != "gemini-1.5-flash":
-            st.session_state.chat = st.session_state.genai_client.chats.create(model="gemini-1.5-flash")
-        else:
-            raise
+# Maintain a dict of chat sessions per model for per-message selection
+if "model_chats" not in st.session_state:
+    st.session_state.model_chats = {}
+
+def get_chat_for_model(model: str):
+    if model not in st.session_state.model_chats:
+        try:
+            st.session_state.model_chats[model] = st.session_state.genai_client.chats.create(model=model)
+        except Exception:
+            if model != "gemini-1.5-flash":
+                st.session_state.model_chats[model] = st.session_state.genai_client.chats.create(model="gemini-1.5-flash")
+            else:
+                raise
+    return st.session_state.model_chats[model]
 
 # Initialize message history
 if "messages" not in st.session_state:
@@ -777,8 +855,9 @@ with chat_container:
                     <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
                         <div style="font-size: 1.25rem;">🧠</div>
                         <div style="font-weight: 500; color: var(--text-primary); font-size: 0.875rem;">AI Assistant</div>
+                        <button onclick="navigator.clipboard.writeText(document.getElementById('assistant-msg-{i}').innerText); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500);" style="margin-left:auto; background: var(--primary-color); color:white; border:none; padding:2px 8px; border-radius:6px; cursor:pointer; font-size:0.65rem;">Copy</button>
                     </div>
-                    <div style="line-height: 1.7; color: var(--text-primary);">{msg["content"]}</div>
+                    <div id="assistant-msg-{i}" style="line-height: 1.7; color: var(--text-primary); white-space: pre-wrap;">{msg["content"]}</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -851,6 +930,12 @@ def create_simple_prompt(user_query: str) -> str:
 {user_query}"""
 
 import math  # placed here to avoid reordering large header region
+try:
+    import tiktoken as _tiktoken  # optional precise token counting
+    _encoder = _tiktoken.get_encoding("cl100k_base")
+except Exception:  # noqa
+    _tiktoken = None
+    _encoder = None
 
 # --- Message Limit & Token Tracking Setup (lightweight heuristic) ---
 if "token_estimate_total" not in st.session_state:
@@ -864,25 +949,45 @@ warn_threshold = max(1, int(message_limit * 0.8))
 def estimate_tokens(text: str) -> int:
     if not text:
         return 0
-    return max(1, math.ceil(len(text) / 4))  # ~4 chars per token heuristic
+    if _encoder is not None:
+        try:
+            return len(_encoder.encode(text))
+        except Exception:
+            pass
+    return max(1, math.ceil(len(text) / 4))  # fallback heuristic
 
 limit_reached = st.session_state.message_count >= message_limit
 
-# Chat input spacing
 st.markdown("<div style='margin: 2rem 0;'></div>", unsafe_allow_html=True)
 
 if limit_reached:
     st.warning(f"Message limit of {message_limit} reached. Use 'Reset Chat' in sidebar to continue.")
 
 prompt = None
+chosen_msg_model = None
 if not limit_reached:
-    prompt = st.chat_input(
-        "Ask me anything about your documents...",
-        key="modern_chat_input"
-    )
+    with st.container():
+        cols = st.columns([3,1])
+        with cols[0]:
+            prompt = st.chat_input(
+                "Ask me anything about your documents...",
+                key="modern_chat_input"
+            )
+        with cols[1]:
+            # Allow per-message model choice (reuse existing free model list)
+            free_models = [
+                "gemini-1.5-flash",
+                "gemini-1.5-flash-8b",
+            ]
+            chosen_msg_model = st.selectbox(
+                "Model",
+                free_models,
+                index=free_models.index(st.session_state.get("selected_model", free_models[0])) if st.session_state.get("selected_model", free_models[0]) in free_models else 0,
+                help="Model to use for this next message"
+            )
 
 if prompt:
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.messages.append({"role": "user", "content": prompt, "model": chosen_msg_model or st.session_state.get("selected_model")})
     st.session_state.message_count += 1
     st.session_state.token_estimate_total += estimate_tokens(prompt)
     if st.session_state.message_count == warn_threshold:
@@ -892,14 +997,11 @@ if prompt:
 # Process the latest message if it's from user and hasn't been responded to
 if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
     latest_prompt = st.session_state.messages[-1]["content"]
-    
-    # Show typing indicator
+
     with st.empty():
         st.markdown("""
         <div style="display: flex; justify-content: flex-start; margin: 1.5rem 0;">
-            <div style="background: var(--surface); border: 1px solid var(--border-color);
-                       padding: 1rem 1.25rem; border-radius: var(--radius-lg); 
-                       box-shadow: var(--shadow-sm);">
+            <div style="background: var(--surface); border: 1px solid var(--border-color); padding: 1rem 1.25rem; border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);">
                 <div style="display: flex; align-items: center; gap: 0.5rem;">
                     <div style="font-size: 1.25rem;">🧠</div>
                     <div style="font-weight: 500; color: var(--text-primary); font-size: 0.875rem;">AI Assistant</div>
@@ -910,30 +1012,20 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             </div>
         </div>
         """, unsafe_allow_html=True)
-    
+
+    reply_model = st.session_state.messages[-1].get("model") or st.session_state.get("selected_model", "gemini-1.5-flash")
     try:
         sources_used = []
-        
-        # Use RAG if enabled and documents are available
         if use_rag:
             vector_db_info = st.session_state.vector_db.get_collection_info()
-            
             if vector_db_info.get("document_count", 0) > 0:
-                # Get relevant context with progress indication
-                search_results = st.session_state.vector_db.similarity_search(
-                    latest_prompt, 
-                    n_results=num_context_docs
-                )
-                
+                search_results = st.session_state.vector_db.similarity_search(latest_prompt, n_results=num_context_docs)
                 if search_results:
-                    # Prepare context and sources
                     context = st.session_state.vector_db.get_relevant_context(
-                        latest_prompt, 
+                        latest_prompt,
                         n_results=num_context_docs,
                         max_context_length=max_context_length
                     )
-                    
-                    # Prepare sources information
                     for result in search_results:
                         sources_used.append({
                             "source": result["metadata"].get("source", "Unknown"),
@@ -941,8 +1033,6 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                             "distance": result["distance"],
                             "preview": result["document"]
                         })
-                    
-                    # Create RAG prompt
                     final_prompt = create_rag_prompt(latest_prompt, context)
                 else:
                     final_prompt = create_simple_prompt(latest_prompt)
@@ -950,30 +1040,20 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 final_prompt = create_simple_prompt(latest_prompt)
         else:
             final_prompt = create_simple_prompt(latest_prompt)
-        
-        # Get response from AI
-        response = st.session_state.chat.send_message(final_prompt)
-        
-        if hasattr(response, "text"):
-            answer = response.text
-        else:
-            answer = str(response)
 
+        chat_obj = get_chat_for_model(reply_model)
+        response = chat_obj.send_message(final_prompt)
+        answer = response.text if hasattr(response, "text") else str(response)
         st.session_state.token_estimate_total += estimate_tokens(answer or "")
         st.session_state.message_count += 1
-
-        # Add to message history with sources
-        message_data = {"role": "assistant", "content": answer}
+        message_data = {"role": "assistant", "content": answer, "model": reply_model}
         if sources_used:
             message_data["sources"] = sources_used
         st.session_state.messages.append(message_data)
-
-        # Rerun to show the response
         st.rerun()
-
     except Exception as e:
         error_message = f"I apologize, but I encountered an error: {str(e)}"
-        st.session_state.messages.append({"role": "assistant", "content": error_message})
+        st.session_state.messages.append({"role": "assistant", "content": error_message, "model": reply_model})
         st.session_state.message_count += 1
         st.session_state.token_estimate_total += estimate_tokens(error_message)
         st.rerun()
