@@ -371,52 +371,52 @@ with st.sidebar:
     with st.container():
         st.markdown("#### 🤖 Model")
 
-        def _discover_models():
+        def _discover_models(force: bool = False):
             """Populate st.session_state.available_models with discovered Gemini flash models.
-            Falls back to a static list if discovery fails or returns nothing."""
-            if "available_models" in st.session_state and not st.session_state.get("_force_refresh_models"):
+            Adds debug info (raw list, filtered list, timestamp, last error) and supports forcing refresh."""
+            if ("available_models" in st.session_state) and not force:
                 return
-            env_default = os.getenv("GEMINI_DEFAULT_MODEL")
-            base_fallback = ["gemini-1.5-flash", "gemini-1.5-flash-8b"]
+            # Support legacy alias DEFAULT_MODEL if GEMINI_DEFAULT_MODEL not set
+            env_default = os.getenv("GEMINI_DEFAULT_MODEL") or os.getenv("DEFAULT_MODEL")
+            # Base fallback now includes 2.5 + 1.5 (priority order updated)
+            base_fallback = ["gemini-2.5-flash", "gemini-2.5-flash-8b", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
             if env_default:
                 env_base = env_default.split("/", 1)[1] if env_default.startswith("models/") else env_default
                 if env_base not in base_fallback:
                     base_fallback.insert(0, env_base)
             models = []
+            raw_models = []
+            last_error = None
             try:
                 client = st.session_state.get("genai_client")
                 if client is not None:
                     raw_list = list(client.models.list())  # type: ignore[attr-defined]
                     for m in raw_list:
                         name = getattr(m, "name", "") or ""
+                        raw_models.append(name)
                         if name.startswith("models/"):
                             name = name.split("/", 1)[1]
                         lname = name.lower()
-                        # Include flash variants excluding pro/vision/experimental markers
                         if "flash" in lname and not any(x in lname for x in ["pro", "vision", "exp"]):
                             models.append(name)
             except Exception as e:  # noqa: BLE001
+                last_error = str(e)
                 st.session_state._model_discovery_error = str(e)
             # Normalize & fallback
             models = sorted(set(models))
             if not models:
                 models = base_fallback
-            # Version-aware sorting: prefer higher major.minor (e.g., 2.5 > 1.5) while preserving flash variants
             def _ver_key(model_name: str):
-                # Extract pattern gemini-X.Y-...
                 try:
                     parts = model_name.split("-")
-                    # e.g. [gemini, 2.5, flash]
                     for p in parts:
                         if p.replace(".", "").isdigit() and "." in p:
                             maj, min_ = p.split(".")
                             return (int(maj), int(min_))
-                    # fallback if numeric not found
                     return (0, 0)
                 except Exception:
                     return (0, 0)
             models_sorted = sorted(models, key=_ver_key, reverse=True)
-            # Ensure base fallback priority at front in given order (env default already inserted if provided)
             ordered = []
             for bf in base_fallback:
                 if bf in models_sorted and bf not in ordered:
@@ -425,32 +425,36 @@ with st.sidebar:
                 if m not in ordered:
                     ordered.append(m)
             st.session_state.available_models = ordered
-            st.session_state.pop("_force_refresh_models", None)
+            st.session_state.model_discovery_debug = {
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "env_default": env_default,
+                "raw_models": raw_models[:50],  # limit for display
+                "filtered_models": models_sorted,
+                "final_available": ordered,
+                "last_error": last_error,
+                "forced": force,
+            }
 
-        # Refresh models button
-        colm1, colm2 = st.columns([3,1])
-        with colm2:
-            if st.button("Refresh", help="Re-discover available models"):
-                st.session_state._force_refresh_models = True
-                _discover_models()
-        _discover_models()
+        # Refresh models button with timestamp display
+        refresh_col1, refresh_col2 = st.columns([3,1])
+        with refresh_col2:
+            if st.button("Refresh", help="Re-discover available models (clears cache)"):
+                _discover_models(force=True)
+        _discover_models(force=False)
 
-        available_models = st.session_state.get("available_models", ["gemini-1.5-flash", "gemini-1.5-flash-8b"])
+        available_models = st.session_state.get("available_models", ["gemini-2.5-flash", "gemini-1.5-flash"])
 
         # Attempt to honor environment default
-        env_default = os.getenv("GEMINI_DEFAULT_MODEL")
+        env_default = os.getenv("GEMINI_DEFAULT_MODEL") or os.getenv("DEFAULT_MODEL")
         if env_default:
             env_base = env_default.split("/", 1)[1] if env_default.startswith("models/") else env_default
             if env_base not in available_models:
-                # Try relaxed matching (strip -latest or size suffix variants)
                 relaxed = env_base.replace("-latest", "")
                 mapped = next((m for m in available_models if m.startswith(relaxed)), None)
                 if mapped:
                     env_base = mapped
-            if env_base in available_models:
-                # Prepend env model if not already first
-                if available_models[0] != env_base:
-                    available_models = [env_base] + [m for m in available_models if m != env_base]
+            if env_base in available_models and available_models[0] != env_base:
+                available_models = [env_base] + [m for m in available_models if m != env_base]
         # Initialize selection
         if "selected_model" not in st.session_state:
             st.session_state.selected_model = available_models[0]
@@ -471,11 +475,26 @@ with st.sidebar:
         if hasattr(st.session_state, "_model_discovery_error"):
             model_warning = f"Model discovery issue: {getattr(st.session_state, '_model_discovery_error')} (showing fallback list)"
         if st.session_state.selected_model not in st.session_state.get("available_models", []):
-            # Provide a gentle nudge; suggest first 3 available
             suggestions = ", ".join(st.session_state.get("available_models", [])[:3])
             model_warning = f"Selected model '{st.session_state.selected_model}' not in discovered list. Suggestions: {suggestions}"
         if model_warning:
             st.info(f"ℹ️ {model_warning}")
+
+        # Debug expander (optional visibility into discovery)
+        with st.expander("🔍 Model Discovery Debug", expanded=False):
+            dbg = st.session_state.get("model_discovery_debug", {})
+            if not dbg:
+                st.write("No discovery data yet.")
+            else:
+                st.write({
+                    "env_default": dbg.get("env_default"),
+                    "timestamp": dbg.get("timestamp"),
+                    "forced": dbg.get("forced"),
+                    "last_error": dbg.get("last_error"),
+                })
+                st.write("Raw models (truncated):", dbg.get("raw_models"))
+                st.write("Filtered models:", dbg.get("filtered_models"))
+                st.write("Final available:", dbg.get("final_available"))
 
         if chosen_model != st.session_state.selected_model:
             st.session_state.selected_model = chosen_model

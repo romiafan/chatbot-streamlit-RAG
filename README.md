@@ -195,7 +195,11 @@ Notes:
 5. Chat creation tries (in order): requested raw, requested prefixed, env default raw/prefixed, 2.5 flash variants, 1.5 flash variants.
 6. If the resolved model differs, UI displays a `requested→actual` badge with a tooltip indicating fallback occurred.
 
-Use the sidebar Refresh button anytime to clear the cached list and re-run discovery.
+Use the sidebar Refresh button anytime to clear the cached list and re-run discovery. A sidebar expander "Model Discovery Debug" shows raw API model names, filtered candidates, final ordered list, and last error.
+
+Additional Alias:
+
+- `DEFAULT_MODEL` can be used as a backward-compatible alias for `GEMINI_DEFAULT_MODEL` (if both set, `GEMINI_DEFAULT_MODEL` wins).
 
 ## 🎨 UI/UX Highlights
 
