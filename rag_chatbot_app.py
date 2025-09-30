@@ -5,6 +5,7 @@ Combines document processing, vector storage, and conversational AI
 
 import streamlit as st
 from google import genai
+import os
 import time
 from typing import List, Dict, Any, Optional
 
@@ -318,13 +319,37 @@ st.set_page_config(
 # Apply custom CSS
 apply_custom_css()
 
-# Custom Modern Header
-st.markdown("""
-<div class="custom-header">
-    <h1>🧠 AI Document Assistant</h1>
-    <p>Intelligent conversations powered by your documents</p>
-</div>
-""", unsafe_allow_html=True)
+# Determine embed / compact mode (query param or env)
+embed_mode = False
+try:
+    # Query params available only during script run
+    qp = st.query_params if hasattr(st, 'query_params') else st.experimental_get_query_params()
+    if qp:
+        # Accept values like '1', 'true', 'yes'
+        raw = qp.get('embed')
+        if isinstance(raw, list):
+            raw = raw[0]
+        if raw is not None and str(raw).lower() in {"1", "true", "yes"}:
+            embed_mode = True
+except Exception:
+    pass
+
+if not embed_mode:
+    # Allow env override when query param absent
+    if os.getenv("EMBED_MODE", "").lower() in {"1", "true", "yes"}:
+        embed_mode = True
+
+if not embed_mode:
+    # Custom Modern Header (suppressed in embed mode for tighter iframe usage)
+    st.markdown("""
+    <div class="custom-header">
+        <h1>🧠 AI Document Assistant</h1>
+        <p>Intelligent conversations powered by your documents</p>
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    # Compact top spacer
+    st.markdown("<div style='margin-top:0.5rem'></div>", unsafe_allow_html=True)
 
 # --- 2. Modern Sidebar Configuration ---
 
@@ -341,6 +366,36 @@ with st.sidebar:
             placeholder="Enter your API key..."
         )
     
+    # Model selection (free-tier friendly Gemini flash models)
+    with st.container():
+        st.markdown("#### 🤖 Model")
+        free_models = [
+            "gemini-1.5-flash",  # general purpose, fast
+            "gemini-1.5-flash-8b",  # smaller, cheaper
+        ]
+        # Provide backward compatibility if session already has a model not in list
+        if "selected_model" in st.session_state and st.session_state.selected_model not in free_models:
+            free_models.append(st.session_state.selected_model)
+
+        default_model = os.getenv("GEMINI_DEFAULT_MODEL", free_models[0])
+        if "selected_model" not in st.session_state:
+            # Initialize with env override if valid
+            st.session_state.selected_model = default_model if default_model in free_models else free_models[0]
+
+        chosen_model = st.selectbox(
+            "Gemini Model",
+            options=free_models,
+            index=free_models.index(st.session_state.selected_model) if st.session_state.selected_model in free_models else 0,
+            help="Choose a free Gemini Flash model. Changing this will reset the current chat session.",
+        )
+
+        if chosen_model != st.session_state.selected_model:
+            st.session_state.selected_model = chosen_model
+            # Reset chat so subsequent messages use new model
+            st.session_state.pop("chat", None)
+            st.session_state.pop("messages", None)
+            st.rerun()
+
     st.divider()
     
     # RAG Settings Section
@@ -402,16 +457,43 @@ with st.sidebar:
     
     st.divider()
     
-    # Quick Stats
+    # Quick Stats (expanded)
+    info = None
     if "vector_db" in st.session_state:
         info = st.session_state.vector_db.get_collection_info()
-        doc_count = info.get("document_count", 0)
-        
-        st.markdown("#### 📊 Quick Stats")
+    doc_count = (info or {}).get("document_count", 0)
+    model_name = st.session_state.get("selected_model", "gemini-1.5-flash")
+    msg_count = st.session_state.get("message_count", 0)
+    msg_limit = int(os.getenv("CHAT_MESSAGE_LIMIT", "50"))
+    token_est = st.session_state.get("token_estimate_total", 0)
+
+    st.markdown("#### 📊 Quick Stats")
+    if embed_mode:
+        st.markdown(
+            f"<div class='modern-card' style='padding:0.75rem; font-size:0.75rem; line-height:1.4;'>🧠 {model_name} • 📄 {doc_count} docs • 💬 {msg_count}/{msg_limit} • 🔢 ~{token_est} tokens</div>",
+            unsafe_allow_html=True
+        )
+    else:
         st.markdown(f"""
-        <div class="modern-card" style="text-align: center; padding: 1rem;">
-            <div style="font-size: 2rem; font-weight: bold; color: var(--primary-color);">{doc_count}</div>
-            <div style="color: var(--text-secondary); font-size: 0.875rem;">Documents Loaded</div>
+        <div class="modern-card" style="padding: 1rem;">
+            <div style="display:flex; justify-content:space-between; gap:0.75rem; flex-wrap:wrap;">
+                <div style="text-align:center; min-width:80px;">
+                    <div style="font-size:1.25rem; font-weight:600; color:var(--primary-color);">{doc_count}</div>
+                    <div style="font-size:0.65rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-secondary);">Docs</div>
+                </div>
+                <div style="text-align:center; min-width:80px;">
+                    <div style="font-size:1.25rem; font-weight:600; color:var(--primary-color);">{msg_count}/{msg_limit}</div>
+                    <div style="font-size:0.65rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-secondary);">Messages</div>
+                </div>
+                <div style="text-align:center; min-width:80px;">
+                    <div style="font-size:1.25rem; font-weight:600; color:var(--primary-color);">~{token_est}</div>
+                    <div style="font-size:0.65rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-secondary);">Tokens</div>
+                </div>
+                <div style="flex:1; min-width:140px;">
+                    <div style="font-size:0.6rem; font-weight:600; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.05em;">Model</div>
+                    <div style="font-size:0.8rem; font-weight:500; color:var(--text-primary); word-break:break-all;">{model_name}</div>
+                </div>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -444,7 +526,8 @@ if "vector_db" not in st.session_state:
 
 # --- 5. Modern File Upload Section ---
 
-st.markdown("### 📁 Document Upload")
+if not embed_mode:
+    st.markdown("### 📁 Document Upload")
 
 # Create a modern upload interface
 upload_container = st.container()
@@ -531,17 +614,45 @@ with upload_container:
                         status_text.text("🔍 Creating embeddings...")
                         progress_bar.progress(50)
                         
-                        # Add to vector database
-                        status_text.text("💾 Storing in vector database...")
+                        # Add to vector database with duplicate filtering
+                        status_text.text("💾 Storing in vector database (filtering duplicates)...")
                         progress_bar.progress(75)
-                        
-                        success = st.session_state.vector_db.add_documents(documents)
+
+                        if "chunk_hashes" not in st.session_state:
+                            st.session_state.chunk_hashes = set()
+
+                        import hashlib as _hashlib
+                        unique_docs = []
+                        skipped = 0
+                        for d in documents:
+                            # LangChain Document objects have .page_content; ensure safe extraction
+                            content = getattr(d, 'page_content', None)
+                            if content is None and isinstance(d, dict):
+                                content = d.get('page_content') or d.get('document')
+                            text_for_hash = (content or '').strip()
+                            if not text_for_hash:
+                                continue
+                            h = _hashlib.sha1(text_for_hash.encode('utf-8', errors='ignore')).hexdigest()
+                            if h in st.session_state.chunk_hashes:
+                                skipped += 1
+                                continue
+                            st.session_state.chunk_hashes.add(h)
+                            unique_docs.append(d)
+
+                        success = True
+                        if unique_docs:
+                            success = st.session_state.vector_db.add_documents(unique_docs)
                         
                         progress_bar.progress(100)
                         status_text.text("✅ Processing complete!")
                         
                         if success:
-                            st.success(f"🎉 Successfully processed {len(uploaded_files)} files and created {len(documents)} document chunks!")
+                            added = len(unique_docs)
+                            total = len(documents)
+                            if skipped:
+                                st.success(f"🎉 Processed {len(uploaded_files)} files: {added} new chunks stored (skipped {skipped} duplicates of {total}).")
+                            else:
+                                st.success(f"🎉 Successfully processed {len(uploaded_files)} files and created {added} document chunks!")
                             
                             # Display processing statistics
                             st.markdown(f"""
@@ -595,11 +706,21 @@ if "vector_db" in st.session_state:
 
 # --- 6. Modern Chat Interface ---
 
-st.markdown("### 💬 Conversation")
+if not embed_mode:
+    st.markdown("### 💬 Conversation")
 
 # Initialize chat session
 if "chat" not in st.session_state:
-    st.session_state.chat = st.session_state.genai_client.chats.create(model="gemini-2.5-flash")
+    # Use selected free model (fallback to gemini-1.5-flash if missing)
+    model_name = st.session_state.get("selected_model", "gemini-1.5-flash")
+    try:
+        st.session_state.chat = st.session_state.genai_client.chats.create(model=model_name)
+    except Exception:
+        # Fallback safety
+        if model_name != "gemini-1.5-flash":
+            st.session_state.chat = st.session_state.genai_client.chats.create(model="gemini-1.5-flash")
+        else:
+            raise
 
 # Initialize message history
 if "messages" not in st.session_state:
@@ -713,20 +834,43 @@ def create_simple_prompt(user_query: str) -> str:
 
 {user_query}"""
 
-# Chat input with modern styling
+import math  # placed here to avoid reordering large header region
+
+# --- Message Limit & Token Tracking Setup (lightweight heuristic) ---
+if "token_estimate_total" not in st.session_state:
+    st.session_state.token_estimate_total = 0
+if "message_count" not in st.session_state:
+    st.session_state.message_count = 0
+
+message_limit = int(os.getenv("CHAT_MESSAGE_LIMIT", "50"))
+warn_threshold = max(1, int(message_limit * 0.8))
+
+def estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, math.ceil(len(text) / 4))  # ~4 chars per token heuristic
+
+limit_reached = st.session_state.message_count >= message_limit
+
+# Chat input spacing
 st.markdown("<div style='margin: 2rem 0;'></div>", unsafe_allow_html=True)
 
-# Enhanced chat input
-prompt = st.chat_input(
-    "Ask me anything about your documents...", 
-    key="modern_chat_input"
-)
+if limit_reached:
+    st.warning(f"Message limit of {message_limit} reached. Use 'Reset Chat' in sidebar to continue.")
+
+prompt = None
+if not limit_reached:
+    prompt = st.chat_input(
+        "Ask me anything about your documents...",
+        key="modern_chat_input"
+    )
 
 if prompt:
-    # Add user message to history
     st.session_state.messages.append({"role": "user", "content": prompt})
-    
-    # Rerun to show the new message immediately
+    st.session_state.message_count += 1
+    st.session_state.token_estimate_total += estimate_tokens(prompt)
+    if st.session_state.message_count == warn_threshold:
+        st.toast(f"You've used {st.session_state.message_count}/{message_limit} messages (≈80%).", icon="⚠️")
     st.rerun()
     
 # Process the latest message if it's from user and hasn't been responded to
@@ -798,20 +942,24 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             answer = response.text
         else:
             answer = str(response)
-        
+
+        st.session_state.token_estimate_total += estimate_tokens(answer or "")
+        st.session_state.message_count += 1
+
         # Add to message history with sources
         message_data = {"role": "assistant", "content": answer}
         if sources_used:
             message_data["sources"] = sources_used
-        
         st.session_state.messages.append(message_data)
-        
+
         # Rerun to show the response
         st.rerun()
-        
+
     except Exception as e:
         error_message = f"I apologize, but I encountered an error: {str(e)}"
         st.session_state.messages.append({"role": "assistant", "content": error_message})
+        st.session_state.message_count += 1
+        st.session_state.token_estimate_total += estimate_tokens(error_message)
         st.rerun()
 
 # --- 8. Enhanced Footer and Help Section ---
