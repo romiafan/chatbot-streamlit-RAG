@@ -1009,55 +1009,42 @@ def get_chat_for_model(model: str):
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-chat_messages_html = []
+# Display chat messages using Streamlit's native chat components
 if not st.session_state.messages:
-    chat_messages_html.append(
-        """
-        <div style='text-align:center; padding:1.5rem 0;'>
-            <div style='font-size:2.25rem; margin-bottom:0.5rem;'>👋</div>
-            <div style='font-weight:600; font-size:1.05rem;'>Welcome to your AI Document Assistant</div>
-            <div style='font-size:0.85rem; color:var(--text-secondary); margin-top:0.5rem;'>Upload documents then ask focused questions for best results.</div>
-        </div>
-        """
-    )
+    st.markdown("""
+    <div class="modern-card" style="text-align: center; background: linear-gradient(135deg, var(--surface), var(--surface-variant)); border: none; margin: 2rem 0;">
+        <div style="font-size: 2.5rem; margin-bottom: 1rem;">👋</div>
+        <h3 style="margin: 0; color: var(--text-primary);">Welcome to your AI Document Assistant</h3>
+        <p style="color: var(--text-secondary); margin: 1rem 0;">
+            Upload documents and ask questions to get started. I'll use your documents to provide more accurate and contextual answers.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Display chat history with native Streamlit components
 for i, msg in enumerate(st.session_state.messages):
     if msg["role"] == "user":
-        chat_messages_html.append(f"""
-        <div style='display:flex; justify-content:flex-end; margin:1rem 0;'>
-            <div style='max-width:78%; background:linear-gradient(135deg, var(--primary-color), var(--accent-color)); color:white; padding:0.85rem 1rem; border-radius:var(--radius-lg); box-shadow:var(--shadow-md); font-size:0.9rem; line-height:1.5;'>
-                <div style='opacity:0.85; font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.25rem;'>You</div>
-                {msg['content']}
-            </div>
-        </div>
-        """)
+        with st.chat_message("user"):
+            st.write(msg["content"])
     else:
         actual_model = msg.get("model") or st.session_state.get("selected_model", "gemini-1.5-flash")
         requested_model = msg.get("requested_model", actual_model)
         display_model = actual_model if requested_model == actual_model else f"{requested_model}→{actual_model}"
-        fallback_attr = "title='Model fallback occurred'" if requested_model != actual_model else ""
-        chat_messages_html.append(f"""
-        <div style='display:flex; justify-content:flex-start; margin:1rem 0;'>
-            <div style='max-width:85%; background:var(--surface); border:1px solid var(--border-color); padding:0.9rem 1rem; border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); font-size:0.9rem; line-height:1.55;'>
-                <div style='display:flex; align-items:center; gap:0.5rem; margin-bottom:0.4rem;'>
-                    <div style='font-size:1.1rem;'>🧠</div>
-                    <div style='font-weight:500; font-size:0.75rem; letter-spacing:0.05em; text-transform:uppercase;'>AI Assistant</div>
-                    <span {fallback_attr} style='background:var(--surface-variant); color:var(--text-secondary); font-size:0.55rem; padding:2px 6px; border-radius:4px; text-transform:uppercase; letter-spacing:0.05em;'>{display_model}</span>
-                    <button class='copy-btn' data-target='assistant-msg-{i}' style='margin-left:auto; background:var(--primary-color); color:white; border:none; padding:2px 8px; border-radius:6px; cursor:pointer; font-size:0.6rem;'>Copy</button>
-                </div>
-                <div id='assistant-msg-{i}' style='white-space:pre-wrap;'>{msg['content']}</div>
-            </div>
-        </div>
-        """)
-
-st.markdown(
-    f"""
-    <div class='chat-window' style='max-height:620px; overflow-y:auto; padding:0.75rem 0.75rem 0.25rem 0.75rem; border:1px solid var(--border-color); border-radius:var(--radius-lg); background:var(--surface-variant);'>
-        {''.join(chat_messages_html)}
-    </div>
-    <script>setTimeout(()=>{{const cw=document.querySelector('.chat-window'); if(cw) cw.scrollTop=cw.scrollHeight;}}, 50);</script>
-    """,
-    unsafe_allow_html=True
-)
+        
+        with st.chat_message("assistant"):
+            # Show model info
+            if requested_model != actual_model:
+                st.caption(f"🤖 {display_model} (fallback occurred)")
+            else:
+                st.caption(f"🤖 {display_model}")
+            
+            # Show message content
+            st.write(msg["content"])
+            
+            # Add copy button for assistant messages
+            if st.button(f"📋 Copy Response", key=f"copy_msg_{i}", help="Copy assistant response to clipboard"):
+                st.write("Response copied! (Use Ctrl+C/Cmd+C to copy from the text above)")
+                st.code(msg["content"], language=None)
 
 # Show sources blocks (outside scroll to keep window performant)
 for i, msg in enumerate(st.session_state.messages):
