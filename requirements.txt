@@ -12,3 +12,6 @@ python-docx>=0.8.11
 langchain-community>=0.0.10
 langchain-chroma>=0.1.0
 tiktoken>=0.5.0
+# Analytics Dependencies
+plotly>=5.0.0
+pandas>=1.3.0

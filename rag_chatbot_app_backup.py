@@ -8,20 +8,152 @@ from google import genai
 import os
 import time
 import json  # for exporting sources as JSON
-from datetime import datetime
+import math
+import hashlib as _hashlib
 from typing import List, Dict, Any, Optional
+
+# Optional imports for enhanced functionality
+try:
+    import tiktoken as _tiktoken  # for precise token counting
+except ImportError:
+    _tiktoken = None
 
 # Import our custom modules
 from document_processor import DocumentProcessor, create_document_processor
 from vector_database import VectorDatabase  # Removed missing get_vector_database (and unused display_vector_db_info)
-from conversation_manager import (
-    ConversationManager, Conversation, get_conversation_manager,
-    generate_conversation_id, generate_conversation_title, auto_categorize_conversation
-)
-from analytics_dashboard import (
-    AnalyticsTracker, AnalyticsEvent, get_analytics_tracker, 
-    create_analytics_visualizations
-)
+
+# --- Website Configuration Constants ---
+# Server-side API key management for website deployment
+ADMIN_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_AI_API_KEY")  # Admin's API key
+ALLOW_USER_KEYS = os.getenv("ALLOW_USER_API_KEYS", "true").lower() in {"true", "1", "yes"}
+DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() in {"true", "1", "yes"}
+
+# Demo documents for showcasing capabilities
+DEMO_DOCUMENTS = {
+    "AI & Technology Overview": {
+        "content": """
+# Artificial Intelligence and Machine Learning Overview
+
+## Introduction
+Artificial Intelligence (AI) represents one of the most transformative technologies of our time. It encompasses machine learning, deep learning, natural language processing, and computer vision.
+
+## Key Concepts
+- **Machine Learning**: Algorithms that improve through experience
+- **Deep Learning**: Neural networks with multiple layers
+- **Natural Language Processing**: Understanding and generating human language
+- **Computer Vision**: Interpreting and analyzing visual information
+
+## Applications
+AI is being applied across industries including healthcare, finance, transportation, and education. Common applications include:
+- Predictive analytics and forecasting
+- Automated decision making
+- Image and speech recognition
+- Recommendation systems
+- Chatbots and virtual assistants
+
+## Current Trends
+- Large Language Models (LLMs)
+- Generative AI
+- Edge computing
+- Responsible AI and ethics
+- AI democratization
+
+## Challenges
+The field faces challenges including data privacy, algorithmic bias, computational requirements, and the need for explainable AI.
+        """,
+        "metadata": {"source": "ai_overview.md", "file_type": "markdown", "category": "technology"}
+    },
+    "RAG Systems Guide": {
+        "content": """
+# Retrieval-Augmented Generation (RAG) Systems
+
+## What is RAG?
+Retrieval-Augmented Generation combines the power of large language models with external knowledge bases to provide accurate, contextual responses.
+
+## How RAG Works
+1. **Document Ingestion**: Documents are processed and split into chunks
+2. **Embedding Generation**: Text chunks are converted to vector embeddings
+3. **Vector Storage**: Embeddings are stored in a vector database
+4. **Query Processing**: User queries are embedded using the same model
+5. **Similarity Search**: Relevant document chunks are retrieved
+6. **Context Assembly**: Retrieved chunks are combined into context
+7. **Response Generation**: LLM generates response using retrieved context
+
+## Key Components
+- **Document Processor**: Handles PDF, DOCX, TXT files
+- **Embedding Model**: Converts text to vector representations
+- **Vector Database**: Stores and searches embeddings (e.g., ChromaDB, Pinecone)
+- **Language Model**: Generates responses (e.g., GPT, Claude, Gemini)
+
+## Benefits
+- Reduces hallucinations by grounding responses in real data
+- Keeps information up-to-date without retraining models
+- Provides source attribution for transparency
+- Cost-effective compared to fine-tuning large models
+
+## Best Practices
+- Choose appropriate chunk sizes (typically 500-2000 characters)
+- Use domain-specific embedding models when available
+- Implement proper document preprocessing
+- Monitor and evaluate response quality
+- Provide clear source citations
+        """,
+        "metadata": {"source": "rag_guide.md", "file_type": "markdown", "category": "ai"}
+    },
+    "Streamlit Development": {
+        "content": """
+# Streamlit App Development Best Practices
+
+## Introduction
+Streamlit is a powerful framework for building data science and machine learning web applications with pure Python.
+
+## Core Concepts
+- **Session State**: Persist data across reruns
+- **Caching**: Optimize performance with @st.cache_data and @st.cache_resource
+- **Layout**: Use columns, containers, and sidebars for organization
+- **Widgets**: Interactive elements like sliders, buttons, and inputs
+
+## Project Structure
+```
+app.py              # Main application file
+requirements.txt    # Dependencies
+.streamlit/         # Configuration directory
+├── config.toml     # App configuration
+└── secrets.toml    # Sensitive data (local only)
+pages/              # Multi-page apps
+components/         # Custom components
+```
+
+## Performance Tips
+- Use caching for expensive operations
+- Minimize session state usage
+- Implement proper error handling
+- Use st.empty() for dynamic content updates
+- Consider fragment-based caching for large apps
+
+## Deployment Options
+- Streamlit Cloud (free tier available)
+- Heroku, AWS, GCP, Azure
+- Docker containers
+- Local development servers
+
+## Security Considerations
+- Never commit secrets to version control
+- Use environment variables for sensitive data
+- Implement proper input validation
+- Consider authentication for sensitive apps
+- Use HTTPS in production
+
+## Advanced Features
+- Custom components with React/HTML
+- State management patterns
+- Real-time data updates
+- Integration with databases
+- API development with FastAPI
+        """,
+        "metadata": {"source": "streamlit_guide.md", "file_type": "markdown", "category": "development"}
+    }
+}
 
 # Fallback factory: original get_vector_database not found in vector_database module
 @st.cache_resource
@@ -43,9 +175,380 @@ def get_vector_database(collection_name: str = "rag_chatbot_docs"):
             # Last-resort no-arg construction
             return VectorDatabase()
 
+def load_demo_documents():
+    """Load and process demo documents into the vector database"""
+    from langchain.docstore.document import Document as LangChainDocument
+    
+    demo_docs = []
+    for title, doc_data in DEMO_DOCUMENTS.items():
+        # Create chunks from the demo content
+        content = doc_data["content"].strip()
+        metadata = doc_data["metadata"].copy()
+        metadata["demo_document"] = True
+        metadata["title"] = title
+        
+        # Split long documents into chunks
+        if len(content) > 1500:
+            # Simple chunk splitting for demo
+            chunks = []
+            lines = content.split('\n')
+            current_chunk = []
+            current_length = 0
+            
+            for line in lines:
+                line_length = len(line) + 1  # +1 for newline
+                if current_length + line_length > 1500 and current_chunk:
+                    chunks.append('\n'.join(current_chunk))
+                    current_chunk = [line]
+                    current_length = line_length
+                else:
+                    current_chunk.append(line)
+                    current_length += line_length
+            
+            if current_chunk:
+                chunks.append('\n'.join(current_chunk))
+            
+            # Create documents for each chunk
+            for i, chunk in enumerate(chunks):
+                chunk_metadata = metadata.copy()
+                chunk_metadata["chunk_index"] = i
+                chunk_metadata["chunk_size"] = len(chunk)
+                demo_docs.append(LangChainDocument(page_content=chunk, metadata=chunk_metadata))
+        else:
+            # Single document
+            metadata["chunk_index"] = 0
+            metadata["chunk_size"] = len(content)
+            demo_docs.append(LangChainDocument(page_content=content, metadata=metadata))
+    
+    return demo_docs
+
+def safe_api_call(func, fallback_message="Service temporarily unavailable", show_error=True):
+    """Wrapper for API calls with graceful error handling"""
+    try:
+        return func()
+    except Exception as e:
+        error_msg = str(e).lower()
+        
+        # Categorize common errors
+        if "api key" in error_msg or "authentication" in error_msg:
+            user_message = "🔑 API key invalid or expired. Please check your credentials."
+        elif "quota" in error_msg or "limit" in error_msg:
+            user_message = "⚠️ API quota exceeded. Please try again later or use your own API key."
+        elif "network" in error_msg or "connection" in error_msg:
+            user_message = "🌐 Network connection issue. Please check your internet connection."
+        elif "timeout" in error_msg:
+            user_message = "⏱️ Request timed out. Please try again."
+        else:
+            user_message = f"⚠️ {fallback_message}"
+        
+        if show_error:
+            st.error(user_message)
+        
+        # Log the actual error for debugging (in production, use proper logging)
+        if os.getenv("DEBUG", "false").lower() in {"true", "1", "yes"}:
+            st.error(f"Debug: {str(e)}")
+        
+        return None
+
+def handle_file_processing_error(error, filename=""):
+    """Specific error handling for file processing"""
+    error_msg = str(error).lower()
+    
+    if "password" in error_msg or "encrypted" in error_msg:
+        return f"🔒 File '{filename}' is password-protected or encrypted"
+    elif "corrupt" in error_msg or "invalid" in error_msg:
+        return f"❌ File '{filename}' appears to be corrupted or invalid"
+    elif "size" in error_msg or "large" in error_msg:
+        return f"📏 File '{filename}' is too large to process"
+    elif "format" in error_msg or "unsupported" in error_msg:
+        return f"🚫 File format not supported for '{filename}'"
+    else:
+        return f"⚠️ Could not process '{filename}': {str(error)}"
+
 # --- Modern CSS Styling ---
 def apply_custom_css():
-    """Apply modern CSS styling inspired by Perplexity and Gemini"""
+    """Apply clean, working CSS styling"""
+    # Get theme configuration safely
+    primary_color = "#2563eb"
+    hide_sidebar = False
+    
+    if 'theme_config' in globals():
+        primary_color = theme_config.get("primary_color", "#2563eb")
+        hide_sidebar = theme_config.get("hide_sidebar", False)
+    
+    st.markdown(f"""
+    <style>
+    /* Hide Streamlit UI elements */
+    #MainMenu {{visibility: hidden;}}
+    footer {{visibility: hidden;}}
+    header {{visibility: hidden;}}
+    .stDeployButton {{display: none;}}
+    
+    /* App base styling */
+    .stApp {{
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }}
+    
+    /* Sidebar */
+    {".stSidebar { display: none !important; }" if hide_sidebar else ""}
+    
+    /* Custom header */
+    .custom-header {{
+        background: linear-gradient(135deg, {primary_color} 0%, #3b82f6 100%);
+        padding: 2rem;
+        margin: -1rem -1rem 2rem -1rem;
+        border-radius: 0 0 1rem 1rem;
+        text-align: center;
+        color: white;
+    }}
+    
+    .custom-header h1 {{
+        margin: 0;
+        font-size: 2.5rem;
+        font-weight: 600;
+    }}
+    
+    .custom-header p {{
+        margin: 0.5rem 0 0 0;
+        opacity: 0.9;
+    }}
+    
+    /* Modern cards */
+    .modern-card {{
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.75rem;
+        padding: 1.5rem;
+        margin: 1rem 0;
+    }}
+    
+    /* Status badges */
+    .status-badge {{
+        padding: 0.25rem 0.75rem;
+        border-radius: 1rem;
+        font-size: 0.75rem;
+        font-weight: 500;
+    }}
+    
+    .status-success {{
+        background: #d1fae5;
+        color: #065f46;
+    }}
+    
+    /* Buttons */
+    .stButton button {{
+        background: {primary_color};
+        color: white;
+        border: none;
+        border-radius: 0.5rem;
+        padding: 0.75rem 1.5rem;
+        font-weight: 500;
+        transition: all 0.2s;
+    }}
+    
+    .stButton button:hover {{
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }}
+    
+    /* Mobile responsive */
+    @media (max-width: 768px) {{
+        .main .block-container {{
+            padding: 0.5rem;
+        }}
+        
+        .custom-header {{
+            margin: -0.5rem -0.5rem 1rem -0.5rem;
+            padding: 1.5rem;
+        }}
+        
+        .custom-header h1 {{
+            font-size: 2rem;
+        }}
+    }}
+    
+    </style>
+    """, unsafe_allow_html=True)
+
+
+def load_demo_documents():
+    """Load and process demo documents into the vector database"""
+        padding: 2rem 0;
+        margin: -2rem -1rem 2rem -1rem;
+        border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+        text-align: center;
+        box-shadow: var(--shadow-lg);
+    }
+    
+    .custom-header h1 {
+        color: white;
+        font-size: 2.5rem;
+        font-weight: 700;
+        margin: 0;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .custom-header p {
+        color: rgba(255,255,255,0.9);
+        font-size: 1.1rem;
+        margin: 0.5rem 0 0 0;
+        font-weight: 400;
+    }
+    
+    /* Sidebar Styling */
+    .stSidebar {
+        background-color: var(--surface);
+        border-right: 1px solid var(--border-color);
+    }
+    
+    .stSidebar .stSelectbox, .stSidebar .stSlider, .stSidebar .stCheckbox {
+        margin-bottom: 1rem;
+    }
+    
+    /* Modern Card Styling */
+    .modern-card {
+        background: var(--surface);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        padding: 1.5rem;
+        margin: 1rem 0;
+        box-shadow: var(--shadow-sm);
+        transition: all 0.2s ease;
+    }
+    
+    .modern-card:hover {
+        box-shadow: var(--shadow-md);
+        border-color: var(--primary-color);
+    }
+    
+    /* Chat Interface */
+    .stChatMessage {
+        border-radius: var(--radius-lg);
+        margin: 1rem 0;
+        padding: 1rem;
+        border: 1px solid var(--border-light);
+        box-shadow: var(--shadow-sm);
+    }
+    
+    .stChatMessage[data-testid="chat-message-user"] {
+        background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
+        color: white;
+        margin-left: 20%;
+        border: none;
+    }
+    
+    .stChatMessage[data-testid="chat-message-assistant"] {
+        background: var(--surface);
+        border: 1px solid var(--border-color);
+        margin-right: 20%;
+    }
+    
+    /* Modern Buttons */
+    .stButton button {
+        background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
+        color: white;
+        border: none;
+        border-radius: var(--radius-md);
+        padding: 0.75rem 1.5rem;
+        font-weight: 500;
+        font-size: 0.875rem;
+        transition: all 0.2s ease;
+        box-shadow: var(--shadow-sm);
+        min-height: 44px; /* Touch-friendly minimum */
+    }
+    
+    .stButton button:hover {
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-md);
+        background: linear-gradient(135deg, var(--primary-hover) 0%, var(--primary-color) 100%);
+    }
+    
+    /* Touch-friendly improvements */
+    .stSelectbox, .stTextInput, .stTextArea {
+        min-height: 44px;
+    }
+    
+    /* File Uploader */
+    .stFileUploader {
+        border: 2px dashed var(--border-color);
+        border-radius: var(--radius-lg);
+        padding: 2rem;
+        text-align: center;
+        background: var(--surface-variant);
+        transition: all 0.2s ease;
+        min-height: 120px; /* Touch-friendly drop zone */
+    }
+    
+    .stFileUploader:hover {
+        border-color: var(--primary-color);
+        background: var(--surface);
+    }
+    
+    /* Success/Error Messages */
+    .stSuccess {
+        background: linear-gradient(135deg, var(--success-color), #059669);
+        color: white;
+        border-radius: var(--radius-md);
+        border: none;
+    }
+    
+    .stError {
+        background: linear-gradient(135deg, var(--error-color), #dc2626);
+        color: white;
+        border-radius: var(--radius-md);
+        border: none;
+    }
+    
+    .stWarning {
+        background: linear-gradient(135deg, var(--warning-color), #d97706);
+        color: white;
+        border-radius: var(--radius-md);
+        border: none;
+    }
+    
+    .stInfo {
+        background: linear-gradient(135deg, var(--accent-color), var(--primary-color));
+        color: white;
+        border-radius: var(--radius-md);
+        border: none;
+    }
+    
+    /* Better scrollbar */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    
+    ::-webkit-scrollbar-track {
+        background: var(--surface-variant);
+        border-radius: 4px;
+    }
+    
+    ::-webkit-scrollbar-thumb {
+        background: var(--border-color);
+        border-radius: 4px;
+    }
+    
+    ::-webkit-scrollbar-thumb:hover {
+        background: var(--text-tertiary);
+    }
+    
+    /* Loading animations */
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+    
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .modern-card {
+        animation: fadeIn 0.3s ease-out;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     st.markdown("""
     <style>
     /* Import Google Fonts */
@@ -346,11 +849,16 @@ st.set_page_config(
     }
 )
 
-# Apply custom CSS
-apply_custom_css()
-
-# Determine embed / compact mode (query param or env)
+# Determine embed / compact mode and theme configuration (query param or env)
 embed_mode = False
+theme_config = {
+    "primary_color": "#2563eb",
+    "background_mode": "light",
+    "compact": False,
+    "hide_sidebar": False,
+    "readonly": False
+}
+
 try:
     # Query params available only during script run
     qp = st.query_params if hasattr(st, 'query_params') else st.experimental_get_query_params()
@@ -361,6 +869,19 @@ try:
             raw = raw[0]
         if raw is not None and str(raw).lower() in {"1", "true", "yes"}:
             embed_mode = True
+        
+        # Theme customization parameters
+        if qp.get('theme'):
+            theme_config["background_mode"] = qp.get('theme', 'light')
+        if qp.get('color'):
+            theme_config["primary_color"] = qp.get('color', '#2563eb')
+        if qp.get('compact') in {"1", "true", "yes"}:
+            theme_config["compact"] = True
+        if qp.get('hide_sidebar') in {"1", "true", "yes"}:
+            theme_config["hide_sidebar"] = True
+        if qp.get('readonly') in {"1", "true", "yes"}:
+            theme_config["readonly"] = True
+            
 except Exception:
     pass
 
@@ -368,6 +889,9 @@ if not embed_mode:
     # Allow env override when query param absent
     if os.getenv("EMBED_MODE", "").lower() in {"1", "true", "yes"}:
         embed_mode = True
+
+# Apply custom CSS after theme config is ready
+apply_custom_css()
 
 if not embed_mode:
     # Custom Modern Header (suppressed in embed mode for tighter iframe usage)
@@ -414,12 +938,28 @@ with st.sidebar:
     # API Key Section
     with st.container():
         st.markdown("#### 🔑 Authentication")
-        google_api_key = st.text_input(
-            "Google AI API Key", 
-            type="password", 
-            help="Enter your Google AI API key to enable the chatbot",
-            placeholder="Enter your API key..."
-        )
+        
+        # Show different UI based on configuration
+        if ALLOW_USER_KEYS:
+            if ADMIN_API_KEY:
+                st.markdown("💡 *Admin API key available for demo mode*")
+            
+            google_api_key = st.text_input(
+                "Google AI API Key (Optional)" if ADMIN_API_KEY else "Google AI API Key", 
+                type="password", 
+                help="Enter your Google AI API key for unlimited usage" if ADMIN_API_KEY else "Enter your Google AI API key to enable the chatbot",
+                placeholder="Enter your API key..." if not ADMIN_API_KEY else "Optional: Use your own API key"
+            )
+            
+            if ADMIN_API_KEY and not google_api_key:
+                st.caption("🎯 Using demo mode with limited usage")
+        else:
+            if ADMIN_API_KEY:
+                st.info("🔑 Using pre-configured API key")
+                google_api_key = None  # Force use of admin key
+            else:
+                st.error("❌ API key configuration required")
+                google_api_key = None
     
     # Dynamic model discovery & selection
     with st.container():
@@ -627,112 +1167,6 @@ with st.sidebar:
     
     st.divider()
     
-    # Conversation Management Section
-    with st.container():
-        st.markdown("#### 💾 Conversation Management")
-        
-        # Initialize conversation manager
-        if "conv_manager" not in st.session_state:
-            st.session_state.conv_manager = get_conversation_manager()
-        
-        # Initialize analytics tracker
-        if "analytics_tracker" not in st.session_state:
-            st.session_state.analytics_tracker = get_analytics_tracker()
-        
-        conv_manager = st.session_state.conv_manager
-        analytics = st.session_state.analytics_tracker
-        
-        # Auto-save current conversation
-        if st.session_state.get("messages") and len(st.session_state.messages) > 0:
-            if st.button("💾 Save Current Chat", help="Save the current conversation", use_container_width=True):
-                current_messages = st.session_state.messages
-                conv_id = generate_conversation_id(current_messages)
-                title = generate_conversation_title(current_messages)
-                category = auto_categorize_conversation(current_messages)
-                
-                conversation = Conversation(
-                    id=conv_id,
-                    title=title,
-                    messages=current_messages,
-                    created_at=datetime.now(),
-                    updated_at=datetime.now(),
-                    category=category,
-                    message_count=len(current_messages),
-                    total_tokens=st.session_state.get("token_estimate_total", 0)
-                )
-                
-                if conv_manager.save_conversation(conversation):
-                    st.success(f"💾 Saved as: {title}")
-                else:
-                    st.error("Failed to save conversation")
-        
-        # Load conversation selector
-        conversations = conv_manager.list_conversations(limit=20)
-        if conversations:
-            conv_options = ["Select a conversation..."] + [
-                f"{conv.title} ({conv.created_at.strftime('%m/%d %H:%M')})" 
-                for conv in conversations
-            ]
-            
-            selected_conv_idx = st.selectbox(
-                "Load Conversation",
-                range(len(conv_options)),
-                format_func=lambda i: conv_options[i],
-                help="Load a previously saved conversation"
-            )
-            
-            if selected_conv_idx > 0:
-                selected_conv = conversations[selected_conv_idx - 1]
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if st.button("📂 Load", use_container_width=True):
-                        st.session_state.messages = selected_conv.messages.copy()
-                        st.session_state.message_count = selected_conv.message_count
-                        st.session_state.token_estimate_total = selected_conv.total_tokens
-                        st.success(f"📂 Loaded: {selected_conv.title}")
-                        st.rerun()
-                
-                with col2:
-                    if st.button("🗑️ Delete", use_container_width=True):
-                        if conv_manager.delete_conversation(selected_conv.id):
-                            st.success("🗑️ Conversation deleted")
-                            st.rerun()
-        
-        # Conversation stats
-        stats = conv_manager.get_conversation_stats()
-        if stats["total_conversations"] > 0:
-            st.markdown("**Conversation History:**")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("💬 Conversations", stats["total_conversations"])
-            with col2:
-                st.metric("📝 Total Messages", stats["total_messages"])
-    
-    st.divider()
-    
-    # Analytics Section
-    with st.container():
-        st.markdown("#### 📊 Analytics Dashboard")
-        
-        if st.button("🔍 View Analytics", help="Open analytics dashboard", use_container_width=True):
-            st.session_state.show_analytics = True
-        
-        # Quick analytics preview
-        if "analytics_tracker" in st.session_state:
-            analytics = st.session_state.analytics_tracker
-            stats = analytics.get_usage_stats(7)  # Last 7 days
-            
-            if stats["total_events"] > 0:
-                st.markdown("**Last 7 Days:**")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("📊 Events", stats["total_events"])
-                with col2:
-                    st.metric("👥 Sessions", stats["unique_sessions"])
-    
-    st.divider()
-    
     # Document Management Section
     with st.container():
         st.markdown("#### 📄 Document Management")
@@ -748,9 +1182,6 @@ with st.sidebar:
             if st.button("🔄 Reset Chat", help="Clear chat history", use_container_width=True):
                 st.session_state.pop("chat", None)
                 st.session_state.pop("messages", None)
-                st.session_state.pop("current_conversation_id", None)  # Reset conversation ID for new conversation
-                st.session_state.message_count = 0
-                st.session_state.token_estimate_total = 0
                 st.rerun()
     
     st.divider()
@@ -815,90 +1246,56 @@ with st.sidebar:
         except Exception:
             pass
 
-    # Enhanced conversation export
-    if "conv_manager" in st.session_state:
-        conv_manager = st.session_state.conv_manager
-        conversations = conv_manager.list_conversations(limit=1000)
-        
-        if conversations:
-            st.markdown("**📤 Export Options:**")
-            
-            # Category filter for export
-            categories = ["All Categories"] + conv_manager.get_categories()
-            export_category = st.selectbox(
-                "Export Category",
-                categories,
-                help="Select category to export"
-            )
-            
-            export_format = st.selectbox(
-                "Export Format",
-                ["JSON", "CSV"],
-                help="Choose export format"
-            )
-            
-            if st.button("📤 Export Conversations", use_container_width=True):
-                try:
-                    category_filter = None if export_category == "All Categories" else export_category
-                    export_data = conv_manager.export_conversations(
-                        format_type=export_format.lower(),
-                        category=category_filter
-                    )
-                    
-                    filename = f"conversations_{export_category.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{export_format.lower()}"
-                    mime_type = "application/json" if export_format == "JSON" else "text/csv"
-                    
-                    st.download_button(
-                        f"📥 Download {export_format}",
-                        data=export_data,
-                        file_name=filename,
-                        mime=mime_type,
-                        use_container_width=True
-                    )
-                    st.success(f"✅ Export ready! Click to download {len(conversations)} conversations.")
-                except Exception as e:
-                    st.error(f"Export failed: {e}")
-            
-            # Import functionality
-            st.markdown("**📥 Import Conversations:**")
-            uploaded_conv_file = st.file_uploader(
-                "Import Conversations",
-                type=["json"],
-                help="Upload a previously exported conversation file",
-                key="conv_import"
-            )
-            
-            if uploaded_conv_file:
-                if st.button("📥 Import Conversations", use_container_width=True):
-                    try:
-                        import_data = uploaded_conv_file.read().decode('utf-8')
-                        imported, errors = conv_manager.import_conversations(import_data, "json")
-                        
-                        if imported > 0:
-                            st.success(f"✅ Successfully imported {imported} conversations!")
-                            if errors > 0:
-                                st.warning(f"⚠️ {errors} conversations failed to import")
-                            st.rerun()
-                        else:
-                            st.error("❌ No conversations were imported")
-                    except Exception as e:
-                        st.error(f"Import failed: {e}")
+# --- 3. Enhanced API Key Management ---
 
-# --- 3. API Key Validation ---
+# Server-side API key management for website deployment
+ADMIN_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_AI_API_KEY")  # Admin's API key
+ALLOW_USER_KEYS = os.getenv("ALLOW_USER_API_KEYS", "true").lower() in {"true", "1", "yes"}
+DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() in {"true", "1", "yes"}
 
-if not google_api_key:
-    st.info("👈 Please add your Google AI API key in the sidebar to start chatting.", icon="🗝️")
+# Determine which API key to use
+effective_api_key = None
+api_key_source = None
+
+if ADMIN_API_KEY and (DEMO_MODE or not google_api_key):
+    # Use admin key for demo mode or when user hasn't provided one
+    effective_api_key = ADMIN_API_KEY
+    api_key_source = "admin"
+    if DEMO_MODE:
+        st.info("🎯 **Demo Mode**: Using pre-configured API key. Some features may have usage limits.", icon="ℹ️")
+elif google_api_key:
+    # Use user-provided key
+    effective_api_key = google_api_key
+    api_key_source = "user"
+else:
+    # No API key available
+    if ALLOW_USER_KEYS:
+        st.info("👈 Please add your Google AI API key in the sidebar to start chatting.", icon="🗝️")
+    else:
+        st.error("🔒 API key required. Please contact the administrator.", icon="❌")
     st.stop()
 
 # Initialize Google AI client
-if ("genai_client" not in st.session_state) or (getattr(st.session_state, "_last_key", None) != google_api_key):
+client_key = f"{effective_api_key}_{api_key_source}"
+if ("genai_client" not in st.session_state) or (getattr(st.session_state, "_last_client_key", None) != client_key):
     try:
-        st.session_state.genai_client = genai.Client(api_key=google_api_key)
-        st.session_state._last_key = google_api_key
+        st.session_state.genai_client = genai.Client(api_key=effective_api_key)
+        st.session_state._last_client_key = client_key
+        st.session_state._api_key_source = api_key_source
         st.session_state.pop("chat", None)
         st.session_state.pop("messages", None)
+        
+        # Show API key source in debug mode
+        if not embed_mode and api_key_source == "admin":
+            st.success("✅ Connected with admin API key")
+        elif not embed_mode and api_key_source == "user":
+            st.success("✅ Connected with your API key")
+            
     except Exception as e:
-        st.error(f"Invalid API Key: {e}")
+        if api_key_source == "user":
+            st.error(f"❌ Invalid API Key: {e}")
+        else:
+            st.error(f"❌ Service temporarily unavailable: {e}")
         st.stop()
 
 # --- 4. Initialize RAG Components ---
@@ -915,12 +1312,7 @@ if "doc_processor" not in st.session_state:
 if "vector_db" not in st.session_state:
     st.session_state.vector_db = get_vector_database("rag_chatbot_docs")
 
-# Initialize session ID for analytics
-if "session_id" not in st.session_state:
-    import uuid
-    st.session_state.session_id = str(uuid.uuid4())[:8]
-
-# --- 5. Modern File Upload Section ---
+# --- 5. Modern File Upload Section with Demo Mode ---
 
 if not embed_mode:
     st.markdown("### 📁 Document Upload")
@@ -928,6 +1320,69 @@ if not embed_mode:
 # Create a modern upload interface
 upload_container = st.container()
 with upload_container:
+    # Demo mode section
+    if DEMO_MODE or ADMIN_API_KEY:
+        st.markdown("""
+        <div class="modern-card" style="background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border: 2px solid #0ea5e9;">
+            <div style="text-align: center; padding: 1rem 0;">
+                <div style="font-size: 2rem; margin-bottom: 0.5rem;">🎯</div>
+                <h4 style="margin: 0; color: var(--text-primary);">Try Demo Documents</h4>
+                <p style="color: var(--text-secondary); margin: 0.5rem 0 1rem 0;">
+                    Explore capabilities with pre-loaded sample documents
+                </p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Demo document selector
+        demo_cols = st.columns(3)
+        
+        for i, (title, doc_data) in enumerate(DEMO_DOCUMENTS.items()):
+            col_idx = i % 3
+            with demo_cols[col_idx]:
+                category = doc_data["metadata"].get("category", "general")
+                emoji = {"technology": "🤖", "ai": "🧠", "development": "💻"}.get(category, "📄")
+                
+                if st.button(
+                    f"{emoji} {title}",
+                    key=f"demo_{i}",
+                    help=f"Load sample document about {title.lower()}",
+                    use_container_width=True
+                ):
+                    # Load this specific demo document
+                    from langchain.docstore.document import Document as LangChainDocument
+                    
+                    content = doc_data["content"].strip()
+                    metadata = doc_data["metadata"].copy()
+                    metadata["demo_document"] = True
+                    metadata["title"] = title
+                    metadata["chunk_index"] = 0
+                    metadata["chunk_size"] = len(content)
+                    
+                    demo_doc = LangChainDocument(page_content=content, metadata=metadata)
+                    
+                    with st.spinner(f"Loading {title}..."):
+                        success = st.session_state.vector_db.add_documents([demo_doc])
+                        if success:
+                            st.success(f"✅ Loaded demo document: {title}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Failed to load {title}")
+        
+        # Load all demo documents button
+        if st.button("🚀 Load All Demo Documents", type="primary", use_container_width=True):
+            with st.spinner("Loading all demo documents..."):
+                demo_docs = load_demo_documents()
+                success = st.session_state.vector_db.add_documents(demo_docs)
+                if success:
+                    st.success(f"✅ Loaded {len(demo_docs)} demo document chunks!")
+                    st.rerun()
+                else:
+                    st.error("❌ Failed to load demo documents")
+        
+        st.markdown("---")
+    
+    # Regular file upload section
     st.markdown("""
     <div class="modern-card">
         <div style="text-align: center; padding: 1rem 0;">
@@ -1000,11 +1455,16 @@ with upload_container:
                 status_text = st.empty()
                 
                 try:
-                    # Process the uploaded files
+                    # Process the uploaded files with enhanced error handling
                     status_text.text("📤 Uploading and extracting text...")
                     progress_bar.progress(25)
                     
-                    documents = st.session_state.doc_processor.process_uploaded_files(uploaded_files)
+                    # Use safe API call for document processing
+                    documents = safe_api_call(
+                        lambda: st.session_state.doc_processor.process_uploaded_files(uploaded_files),
+                        "Document processing service unavailable",
+                        show_error=False  # Handle errors manually for better UX
+                    )
                     
                     if documents:
                         status_text.text("🔍 Creating embeddings...")
@@ -1020,6 +1480,7 @@ with upload_container:
                         import hashlib as _hashlib
                         unique_docs = []
                         skipped = 0
+                        processing_errors = []
 
                         # Build an existing hash set from persisted collection once per run (metadata scan)
                         existing_hashes = set()
@@ -1032,23 +1493,26 @@ with upload_container:
                                     h = m.get("chunk_hash") if isinstance(m, dict) else None
                                     if h:
                                         existing_hashes.add(h)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            # Non-critical error - continue without existing hash check
+                            if os.getenv("DEBUG", "false").lower() in {"true", "1", "yes"}:
+                                st.warning(f"⚠️ Could not check for existing duplicates: {str(e)}")
 
-                        for d in documents:
-                            content = getattr(d, 'page_content', None)
-                            if content is None and isinstance(d, dict):
-                                content = d.get('page_content') or d.get('document')
-                            text_for_hash = (content or '').strip()
-                            if not text_for_hash:
-                                continue
-                            h = _hashlib.sha1(text_for_hash.encode('utf-8', errors='ignore')).hexdigest()
-                            if h in st.session_state.chunk_hashes or h in existing_hashes:
-                                skipped += 1
-                                continue
-                            st.session_state.chunk_hashes.add(h)
-                            # attach hash to metadata for persistence
+                        # Process documents with individual error handling
+                        for i, d in enumerate(documents):
                             try:
+                                content = getattr(d, 'page_content', None)
+                                if content is None and isinstance(d, dict):
+                                    content = d.get('page_content') or d.get('document')
+                                text_for_hash = (content or '').strip()
+                                if not text_for_hash:
+                                    continue
+                                h = _hashlib.sha1(text_for_hash.encode('utf-8', errors='ignore')).hexdigest()
+                                if h in st.session_state.chunk_hashes or h in existing_hashes:
+                                    skipped += 1
+                                    continue
+                                st.session_state.chunk_hashes.add(h)
+                                # attach hash to metadata for persistence
                                 meta_attr = getattr(d, 'metadata', None)
                                 if meta_attr is not None and isinstance(meta_attr, dict):
                                     meta_attr['chunk_hash'] = h
@@ -1056,41 +1520,26 @@ with upload_container:
                                     d.setdefault('metadata', {})
                                     if isinstance(d['metadata'], dict):
                                         d['metadata']['chunk_hash'] = h
-                            except Exception:
-                                pass
-                            unique_docs.append(d)
+                                unique_docs.append(d)
+                            except Exception as e:
+                                processing_errors.append(f"Chunk {i+1}: {str(e)}")
+                                continue
 
+                        # Add documents to vector database with error handling
                         success = True
                         if unique_docs:
-                            success = st.session_state.vector_db.add_documents(unique_docs)
+                            success = safe_api_call(
+                                lambda: st.session_state.vector_db.add_documents(unique_docs),
+                                "Vector database storage unavailable",
+                                show_error=False
+                            )
                         
                         progress_bar.progress(100)
                         status_text.text("✅ Processing complete!")
                         
-                        # Track analytics for document processing
-                        if "analytics_tracker" in st.session_state:
-                            analytics = st.session_state.analytics_tracker
-                            import uuid
-                            event_id = str(uuid.uuid4())[:12]
-                            
-                            analytics.track_event(AnalyticsEvent(
-                                id=event_id,
-                                timestamp=datetime.now(),
-                                event_type="document_upload",
-                                user_id="anonymous",
-                                session_id=st.session_state.get("session_id", ""),
-                                metadata={
-                                    "files_count": len(uploaded_files),
-                                    "chunks_added": len(unique_docs),
-                                    "chunks_skipped": skipped,
-                                    "total_chunks": len(documents),
-                                    "file_types": list(set(file.type for file in uploaded_files if file.type))
-                                }
-                            ))
-                        
                         if success:
                             added = len(unique_docs)
-                            total = len(documents)
+                            total = len(documents) if documents else 0
                             if skipped:
                                 st.success(f"🎉 Processed {len(uploaded_files)} files: {added} new chunks stored (skipped {skipped} duplicates of {total}).")
                             else:
@@ -1105,7 +1554,7 @@ with upload_container:
                                         <div style="font-size: 0.875rem; opacity: 0.9;">Files</div>
                                     </div>
                                     <div>
-                                        <div style="font-size: 1.5rem; font-weight: bold;">{len(documents)}</div>
+                                        <div style="font-size: 1.5rem; font-weight: bold;">{total}</div>
                                         <div style="font-size: 0.875rem; opacity: 0.9;">Chunks</div>
                                     </div>
                                     <div>
@@ -1115,13 +1564,24 @@ with upload_container:
                                 </div>
                             </div>
                             """, unsafe_allow_html=True)
+                            
+                            # Show processing warnings if any
+                            if processing_errors:
+                                with st.expander(f"⚠️ {len(processing_errors)} processing warnings", expanded=False):
+                                    for error in processing_errors[:10]:  # Limit to first 10 errors
+                                        st.warning(error)
+                                    if len(processing_errors) > 10:
+                                        st.info(f"... and {len(processing_errors) - 10} more issues")
                         else:
                             st.error("❌ Failed to add documents to vector database")
                     else:
                         st.warning("⚠️ No text could be extracted from the uploaded files")
                         
                 except Exception as e:
-                    st.error(f"❌ Error processing files: {str(e)}")
+                    error_msg = handle_file_processing_error(e)
+                    st.error(error_msg)
+                    if os.getenv("DEBUG", "false").lower() in {"true", "1", "yes"}:
+                        st.exception(e)
                 finally:
                     progress_bar.empty()
                     status_text.empty()
@@ -1146,58 +1606,7 @@ if "vector_db" in st.session_state:
         </div>
         """, unsafe_allow_html=True)
 
-# --- 6. Analytics Dashboard (if requested) ---
-
-if st.session_state.get("show_analytics", False):
-    st.markdown("### 📊 Analytics Dashboard")
-    
-    # Analytics controls
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
-        analytics_period = st.selectbox(
-            "Analytics Period",
-            [7, 30, 90],
-            format_func=lambda x: f"Last {x} days",
-            help="Select the time period for analytics"
-        )
-    with col2:
-        if st.button("🔄 Refresh", help="Refresh analytics data"):
-            st.rerun()
-    with col3:
-        if st.button("❌ Close", help="Close analytics dashboard"):
-            st.session_state.show_analytics = False
-            st.rerun()
-    
-    # Display analytics
-    if "analytics_tracker" in st.session_state:
-        analytics = st.session_state.analytics_tracker
-        
-        # Create visualizations
-        create_analytics_visualizations(analytics, analytics_period)
-        
-        # Export analytics
-        st.markdown("### 📤 Export Analytics")
-        if st.button("📥 Download Analytics Report", use_container_width=True):
-            try:
-                export_data = analytics.export_analytics(analytics_period)
-                st.download_button(
-                    "📥 Download JSON Report",
-                    data=export_data,
-                    file_name=f"analytics_report_{analytics_period}d_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json",
-                    use_container_width=True
-                )
-                st.success("Analytics report ready for download!")
-            except Exception as e:
-                st.error(f"Failed to generate report: {e}")
-    else:
-        st.info("Analytics tracking not available.")
-    
-    st.markdown("---")
-    # Exit early to show only analytics
-    st.stop()
-
-# --- 7. Modern Chat Interface ---
+# --- 6. Modern Chat Interface ---
 
 if not embed_mode:
     st.markdown("### 💬 Conversation")
@@ -1302,8 +1711,22 @@ for i, msg in enumerate(st.session_state.messages):
             else:
                 st.caption(f"🤖 {display_model}")
             
-            # Show message content
-            st.write(msg["content"])
+            # Show message content with error handling
+            if msg.get("error"):
+                # Special styling for error messages
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #fee2e2, #fecaca); 
+                           border: 1px solid #f87171; border-radius: 0.5rem; 
+                           padding: 1rem; margin: 0.5rem 0;">
+                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                        <span style="font-size: 1.25rem;">⚠️</span>
+                        <span style="font-weight: 600; color: #dc2626;">Service Error</span>
+                    </div>
+                    <div style="color: #7f1d1d;">{msg["content"]}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.write(msg["content"])
             
             # Add copy button for assistant messages
             if st.button(f"📋 Copy Response", key=f"copy_msg_{i}", help="Copy assistant response to clipboard"):
@@ -1424,26 +1847,6 @@ if not limit_reached:
             )
 
 if prompt:
-    # Track analytics for user query
-    if "analytics_tracker" in st.session_state:
-        analytics = st.session_state.analytics_tracker
-        import uuid
-        event_id = str(uuid.uuid4())[:12]
-        
-        analytics.track_event(AnalyticsEvent(
-            id=event_id,
-            timestamp=datetime.now(),
-            event_type="query",
-            user_id="anonymous",
-            session_id=st.session_state.get("session_id", ""),
-            metadata={
-                "query": prompt,
-                "query_length": len(prompt),
-                "model": chosen_msg_model or st.session_state.get("selected_model"),
-                "rag_enabled": st.session_state.get("enable_rag", True)
-            }
-        ))
-    
     st.session_state.messages.append({"role": "user", "content": prompt, "model": chosen_msg_model or st.session_state.get("selected_model")})
     st.session_state.message_count += 1
     st.session_state.token_estimate_total += estimate_tokens(prompt)
@@ -1471,14 +1874,9 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         """, unsafe_allow_html=True)
 
     reply_model = st.session_state.messages[-1].get("model") or st.session_state.get("selected_model", "gemini-1.5-flash")
-    start_time = datetime.now()
-    
     try:
         sources_used = []
-        rag_retrieval_time = 0
-        
         if use_rag:
-            rag_start = datetime.now()
             vector_db_info = st.session_state.vector_db.get_collection_info()
             if vector_db_info.get("document_count", 0) > 0:
                 search_results = st.session_state.vector_db.similarity_search(latest_prompt, n_results=num_context_docs)
@@ -1495,106 +1893,47 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                             "distance": result["distance"],
                             "preview": result["document"]
                         })
-                        
-                        # Track document engagement
-                        if "analytics_tracker" in st.session_state:
-                            analytics = st.session_state.analytics_tracker
-                            analytics.track_document_engagement(
-                                document_name=result["metadata"].get("source", "Unknown"),
-                                engagement_type="retrieval",
-                                relevance_score=1 - result["distance"],  # Convert distance to relevance
-                                chunk_index=result["metadata"].get("chunk_index", 0),
-                                query=latest_prompt
-                            )
-                    
                     final_prompt = create_rag_prompt(latest_prompt, context)
                 else:
                     final_prompt = create_simple_prompt(latest_prompt)
             else:
                 final_prompt = create_simple_prompt(latest_prompt)
-            rag_retrieval_time = (datetime.now() - rag_start).total_seconds()
         else:
             final_prompt = create_simple_prompt(latest_prompt)
 
+        # Generate response with professional error handling
         chat_obj = get_chat_for_model(reply_model)
         
-        # Track AI response generation time
-        ai_start = datetime.now()
-        response = chat_obj.send_message(final_prompt)
-        ai_response_time = (datetime.now() - ai_start).total_seconds()
+        def generate_response():
+            response = chat_obj.send_message(final_prompt)
+            return response.text if hasattr(response, "text") else str(response)
         
-        answer = response.text if hasattr(response, "text") else str(response)
-        total_response_time = (datetime.now() - start_time).total_seconds()
+        answer = safe_api_call(
+            generate_response,
+            "AI service temporarily unavailable. Please try again in a moment.",
+            show_error=False
+        )
         
-        # Track performance metrics
-        if "analytics_tracker" in st.session_state:
-            analytics = st.session_state.analytics_tracker
-            analytics.track_performance("rag_retrieval_time", rag_retrieval_time)
-            analytics.track_performance("ai_response_time", ai_response_time)
-            analytics.track_performance("total_response_time", total_response_time)
-            
-            # Track response analytics
-            import uuid
-            event_id = str(uuid.uuid4())[:12]
-            analytics.track_event(AnalyticsEvent(
-                id=event_id,
-                timestamp=datetime.now(),
-                event_type="response_generated",
-                user_id="anonymous",
-                session_id=st.session_state.get("session_id", ""),
-                metadata={
-                    "response_length": len(answer),
-                    "sources_count": len(sources_used),
-                    "model_used": reply_model,
-                    "rag_used": use_rag and len(sources_used) > 0,
-                    "response_time": total_response_time,
-                    "query_length": len(latest_prompt)
-                }
-            ))
-        
-        st.session_state.token_estimate_total += estimate_tokens(answer or "")
-        st.session_state.message_count += 1
-        # Resolve actual model (fallback may have occurred)
-        chat_actual = getattr(st.session_state.model_chats.get(reply_model, {}), "_actual_model", reply_model)
-        message_data = {"role": "assistant", "content": answer, "model": chat_actual, "requested_model": reply_model}
-        if sources_used:
-            message_data["sources"] = sources_used
-        st.session_state.messages.append(message_data)
-        st.session_state.message_count += 1
-        st.session_state.token_estimate_total += estimate_tokens(answer)
-        
-        # Auto-save conversation after every assistant response
-        if "conv_manager" in st.session_state and len(st.session_state.messages) >= 2:
-            try:
-                conv_manager = st.session_state.conv_manager
-                current_messages = st.session_state.messages
-                
-                # Generate or reuse conversation ID
-                if "current_conversation_id" not in st.session_state:
-                    st.session_state.current_conversation_id = generate_conversation_id(current_messages)
-                
-                conv_id = st.session_state.current_conversation_id
-                title = generate_conversation_title(current_messages)
-                category = auto_categorize_conversation(current_messages)
-                
-                # Get creation time (preserve if conversation exists, otherwise use now)
-                existing_conv = conv_manager.load_conversation(conv_id)
-                created_time = existing_conv.created_at if existing_conv else datetime.now()
-                
-                conversation = Conversation(
-                    id=conv_id,
-                    title=title,
-                    messages=current_messages,
-                    created_at=created_time,
-                    updated_at=datetime.now(),
-                    category=category,
-                    message_count=len(current_messages),
-                    total_tokens=st.session_state.get("token_estimate_total", 0)
-                )
-                
-                conv_manager.save_conversation(conversation)
-            except Exception:
-                pass  # Silent auto-save failure
+        if answer:
+            st.session_state.token_estimate_total += estimate_tokens(answer)
+            st.session_state.message_count += 1
+            # Resolve actual model (fallback may have occurred)
+            chat_actual = getattr(st.session_state.model_chats.get(reply_model, {}), "_actual_model", reply_model)
+            message_data = {"role": "assistant", "content": answer, "model": chat_actual, "requested_model": reply_model}
+            if sources_used:
+                message_data["sources"] = sources_used
+            st.session_state.messages.append(message_data)
+        else:
+            # Fallback response when API fails
+            error_message = "I'm experiencing technical difficulties right now. Please try again in a moment, or check your API key if you're using a custom one."
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": error_message, 
+                "model": reply_model,
+                "error": True
+            })
+            st.session_state.message_count += 1
+            st.session_state.token_estimate_total += estimate_tokens(error_message)
         
         st.rerun()
     except Exception as e:
