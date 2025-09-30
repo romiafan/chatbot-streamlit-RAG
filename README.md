@@ -1,4 +1,4 @@
-# � AI Document Assistant
+# 🧠 AI Document Assistant
 
 A modern, intelligent **Retrieval-Augmented Generation (RAG)** chatbot with a beautiful UI/UX inspired by Perplexity and Gemini. Upload your documents and have intelligent conversations powered by Google Gemini AI with a sleek, professional interface.
 
@@ -28,7 +28,11 @@ A modern, intelligent **Retrieval-Augmented Generation (RAG)** chatbot with a be
 - 📊 **Enhanced Source Attribution**: Beautiful source cards with relevance scores
 - ⚙️ **Intelligent Configuration**: User-friendly settings with smart defaults
 - 🔄 **Real-time Processing**: Live document indexing with progress indicators
-- � **Modern Chat Interface**: Gemini-style message bubbles with smooth interactions
+- 💬 **Modern Chat Interface**: Gemini-style message bubbles with smooth interactions
+- 🧩 **Duplicate Chunk Deduping**: SHA1 hashing skips re-embedding identical text (speed + cost)
+- 🎯 **Context Governance**: Adjustable number of retrieved chunks and max context length
+- 🧮 **Lightweight Token Estimation**: Heuristic chars/4 running total (no extra deps)
+- 🚦 **Message Limit Safeguard**: Hard cap (default 50) with 80% early warning
 
 ### 🌟 **User Experience**
 
@@ -150,18 +154,23 @@ chatbot-streamlit-RAG/
 
 ### Environment Variables
 
-Create a `.env` file for advanced configuration:
+Create a `.env` file (or set in your deployment environment) for configuration:
 
 ```env
 # Required
 GOOGLE_AI_API_KEY=your_gemini_api_key_here
 
-# Optional customization
-DEFAULT_MODEL=gemini-2.5-flash
-DEFAULT_MAX_TOKENS=2000
-DEFAULT_TEMPERATURE=0.7
-CHROMA_PERSIST_DIRECTORY=./vector_db
+# Optional runtime customization
+GEMINI_DEFAULT_MODEL=gemini-1.5-flash-8b     # Preselect model in sidebar (free-tier friendly)
+CHAT_MESSAGE_LIMIT=50                       # Total (user+assistant) messages before reset required
+EMBED_MODE=1                                # Compact UI for iframe embedding / portal usage
+CHROMA_PERSIST_DIRECTORY=./vector_db        # Persist embeddings between restarts (if desired)
 ```
+
+Notes:
+- If `GEMINI_DEFAULT_MODEL` not set, a sensible free model is chosen.
+- `EMBED_MODE` can also be activated via URL query param: `?embed=1`.
+- Message limit shows a toast at 80% usage; once reached, only Reset Chat is allowed.
 
 ## 🎨 UI/UX Highlights
 
@@ -201,7 +210,7 @@ CHROMA_PERSIST_DIRECTORY=./vector_db
 
 - **PyPDF2**: PDF text extraction
 - **python-docx**: Word document processing
-- **tiktoken**: Token counting and management
+- **(Optional) tiktoken**: For precise token counting if you replace the heuristic (not required by default)
 
 ### UI/UX Technologies
 
@@ -219,7 +228,18 @@ CHROMA_PERSIST_DIRECTORY=./vector_db
 - **💼 Business**: Process contracts, policies, and procedures
 - **📝 Content Review**: Analyze large documents quickly and efficiently
 
-## 🎉 What's New in v2.0
+## 🎉 What's New
+
+### Recent Enhancements (Post v2.0)
+
+- ✅ Free-tier Gemini model selector in sidebar (env override with `GEMINI_DEFAULT_MODEL`)
+- ✅ Embed / Compact Mode via `?embed=1` or `EMBED_MODE=1` (suppresses large headers & condenses stats)
+- ✅ Message & token usage governance (`CHAT_MESSAGE_LIMIT`, heuristic token estimate chars/4)
+- ✅ Duplicate chunk hashing prevents re-embedding identical content within a session
+- ✅ Expanded sidebar Quick Stats: docs, messages used, token estimate, current model
+- ✅ Clearer success messaging: highlights number of new vs skipped duplicate chunks
+
+### v2.0 UI/UX Overhaul (Previous Major Release)
 
 ### Major UI/UX Overhaul
 
@@ -253,14 +273,16 @@ CHROMA_PERSIST_DIRECTORY=./vector_db
 | **Docker Issues**  | Ensure Docker is running and ports 8501 is available         |
 | **Upload Errors**  | Check file format (PDF, DOCX, TXT) and size limits           |
 
-### Performance Tips
+### Performance & Usage Tips
 
 - **Document Preparation**: Clean documents before upload for better results
-- **Chunk Size**: Smaller chunks often improve retrieval accuracy
-- **Model Selection**: Use `gemini-2.5-flash` for faster responses
-- **Context Tuning**: Adjust context length based on your needs
+- **Chunk Size**: Smaller chunks often improve retrieval accuracy (current splitter: 1000 chars w/ 200 overlap)
+- **Model Selection**: Pick a flash model for speed; override default with `GEMINI_DEFAULT_MODEL`
+- **Context Tuning**: Adjust context length to balance recall vs. latency
+- **Avoid Dupes**: Re-uploading identical files won't cost extra embedding time in the same session
+- **Approaching Limit**: If you see an 80% usage toast, consider resetting sooner to keep context focused
 
-## �📄 License
+## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
