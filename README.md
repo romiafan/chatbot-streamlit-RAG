@@ -40,6 +40,12 @@ A modern, intelligent **Retrieval-Augmented Generation (RAG)** chatbot with a be
 - 📋 **Copy Answer Button**: One-click copy for each assistant reply
 - 🔀 **Per-Message Model Choice**: Select model for each prompt independently
 - 🔢 **Optional Precise Token Counting**: Uses `tiktoken` automatically if installed; falls back gracefully
+- 🤖 **Dynamic Gemini Model Discovery**: Enumerates available free-tier flash models at runtime
+- 🧭 **Environment Default Priority**: `GEMINI_DEFAULT_MODEL` (e.g. `gemini-2.5-flash`) is surfaced first when present
+- 📈 **Version-Aware Ordering**: Prefers newer flash generations (2.5 before 1.5)
+- 🔁 **One-Click Model Refresh**: Sidebar Refresh button re-runs discovery without restarting
+- 🪄 **Resilient Fallback Resolution**: Automatic fallback attempts (raw, prefixed, alt flash variants) to avoid 404 errors
+- 🏷️ **Requested→Actual Badge**: If fallback triggers, assistant messages show `requested→actual` model tag
 
 ### 🌟 **User Experience**
 
@@ -180,6 +186,17 @@ Notes:
 - `EMBED_MODE` can also be activated via URL query param: `?embed=1`.
 - Message limit shows a toast at 80% usage; once reached, only Reset Chat is allowed.
 
+### Model Discovery & Fallback Logic
+
+1. Discovery lists Gemini models and filters for flash variants (excluding `pro`, `vision`, `exp`).
+2. Environment default (if defined) is prepended.
+3. Models are version-sorted so `gemini-2.5-*` precede `gemini-1.5-*`.
+4. If nothing is discovered, a minimal fallback list begins with the environment default (if any) then known flash variants.
+5. Chat creation tries (in order): requested raw, requested prefixed, env default raw/prefixed, 2.5 flash variants, 1.5 flash variants.
+6. If the resolved model differs, UI displays a `requested→actual` badge with a tooltip indicating fallback occurred.
+
+Use the sidebar Refresh button anytime to clear the cached list and re-run discovery.
+
 ## 🎨 UI/UX Highlights
 
 ### Design System
@@ -252,6 +269,10 @@ Notes:
 - ✅ Copy-to-clipboard button on assistant messages
 - ✅ Per-response & batch JSON export of sources
 - ✅ Optional precise token counting via `tiktoken` (fallback heuristic if unavailable)
+- ✅ Dynamic model discovery + version ordering (2.5 prioritized when available)
+- ✅ Env default forced into fallback chain for resiliency
+- ✅ Model Refresh button for on-demand re-discovery
+- ✅ Requested→Actual fallback indicator in assistant responses
 
 ### v2.0 UI/UX Overhaul (Previous Major Release)
 
